@@ -675,6 +675,93 @@ spec:
 
 ![External STS](images/13-gateway-mediated-external.png)
 
+#### What the two tokens look like
+
+> Unlike Variant A, the exchanged token here is **issued by Entra**, not by agentgateway. The agent validates against Entra's JWKS (`https://login.microsoftonline.com/<tenant>/discovery/v2.0/keys`).
+
+**Input — User JWT** (issued by Entra ID, audience = the gateway's app registration):
+
+```jsonc
+// Header
+{
+  "alg": "RS256",
+  "kid": "nOo3ZDrODXEK1jKWhXslHR_KXEg",
+  "typ": "JWT"
+}
+// Payload — Entra v2.0 access token
+{
+  "iss": "https://login.microsoftonline.com/72f988bf-86f1-41af-91ab-2d7cd011db47/v2.0",
+  "aud": "api://4ab8e9b1-...-gateway-app",   // the gateway's Entra app client_id
+  "sub": "AAAAAA...user-pairwise-id",
+  "oid": "5f6c2c8d-3e4d-4f8e-9b0a-1c2d3e4f5a6b", // stable Entra user object id
+  "tid": "72f988bf-86f1-41af-91ab-2d7cd011db47", // tenant id
+  "preferred_username": "alice@contoso.com",
+  "name": "Alice Anderson",
+  "scp": "User.Access",                         // Entra v2 uses `scp` not `scope`
+  "ver": "2.0",
+  "exp": 1777300000,
+  "iat": 1777296400,
+  "nbf": 1777296400
+}
+```
+
+**OBO request the gateway makes to Entra** (server-to-server, no user redirect):
+
+```http
+POST https://login.microsoftonline.com/72f988bf-.../oauth2/v2.0/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer
+client_id=4ab8e9b1-...-gateway-app
+client_secret=<from clientSecretRef>
+assertion=<the User JWT above>
+scope=https://graph.microsoft.com/User.Read
+requested_token_use=on_behalf_of
+```
+
+**Output — Exchanged JWT** (issued by Entra, audience = the target resource):
+
+```jsonc
+// Header
+{
+  "alg": "RS256",
+  "kid": "nOo3ZDrODXEK1jKWhXslHR_KXEg",     // still Entra's signing key
+  "typ": "JWT"
+}
+// Payload — Entra-issued, scoped to Microsoft Graph
+{
+  "iss": "https://login.microsoftonline.com/72f988bf-.../v2.0",
+  "aud": "https://graph.microsoft.com",      // CHANGED: target resource, not the gateway
+  "sub": "AAAAAA...graph-pairwise-id",       // CHANGED: pairwise sub for the new audience
+  "oid": "5f6c2c8d-3e4d-4f8e-9b0a-1c2d3e4f5a6b", // PRESERVED: stable user identity
+  "tid": "72f988bf-86f1-41af-91ab-2d7cd011db47",
+  "preferred_username": "alice@contoso.com",
+  "name": "Alice Anderson",
+  "scp": "User.Read",                         // CHANGED: only the scope requested in the OBO call
+  "azp": "4ab8e9b1-...-gateway-app",          // NEW: the app that performed the OBO (the gateway)
+  "azpacr": "1",                              // NEW: auth method used (1 = client_secret)
+  "ver": "2.0",
+  "exp": 1777300000,
+  "iat": 1777296400,
+  "nbf": 1777296400
+}
+```
+
+What changed and why:
+
+| Field | User JWT | Exchanged JWT | Why |
+|---|---|---|---|
+| `iss` | Entra (your tenant) | Entra (your tenant) | Same issuer in both — Entra mints both tokens |
+| `aud` | gateway app id | target resource (e.g. Graph) | Token is now scoped to the resource being called |
+| `sub` | pairwise for gateway | pairwise for target resource | Entra issues a new pairwise `sub` per audience |
+| `oid` | user object id | user object id | Stable across audiences — use this for "who is this user" |
+| `scp` | full IdP scopes | only OBO-requested scope | Entra honors the `scope=` parameter in the OBO call |
+| `azp` | (none) | gateway app id | RFC 7519 "authorized party" — records which app did the OBO |
+| `act` | (none) | (none) | **Entra OBO does not emit RFC 8693 `act` — it's a Microsoft-flavored exchange, not the standard one** |
+| signature | Entra | Entra | Agent verifies against Entra JWKS, not AGW STS |
+
+> **Operational consequence:** Variant B's agent must be configured to trust **Entra** as the JWT issuer. With Variant A the agent trusts the **AGW STS** and the IdP is invisible — that's the main reason teams choose Variant A even when they're already on Entra.
+
 > **Docs:** [OBO Token Exchange](https://docs.solo.io/agentgateway/2.2.x/security/obo-elicitations/obo/) · [Set up JWT Auth](https://docs.solo.io/agentgateway/2.2.x/security/jwt/setup/)
 > **API / Helm:** [tokenExchange Helm values](https://docs.solo.io/agentgateway/2.2.x/reference/helm/agentgateway/)
 
@@ -719,7 +806,128 @@ spec:
 > **Docs:** [OBO Token Exchange](https://docs.solo.io/agentgateway/2.2.x/security/obo-elicitations/obo/) · [About OBO & Elicitations](https://docs.solo.io/agentgateway/2.2.x/security/obo-elicitations/about/)
 > **API / Helm:** [tokenExchange Helm values](https://docs.solo.io/agentgateway/2.2.x/reference/helm/agentgateway/)
 
-![OBO Delegation](images/2a-obo-delegation.png)
+> **About this diagram.** The Mermaid version below replaces the original PNG (`images/2a-obo-delegation.png`), which rendered the token-exchange call as `Agent → STS`. In agentgateway, `BackendAuthPolicy.tokenExchange` runs in the proxy data plane — the **gateway** is what calls the STS, transparently to the agent.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant Agent as Agent<br/>(client of MCP tools)
+    participant GW as Agent Gateway<br/>(Proxy)
+    participant STS as AGW Built-in STS
+    participant Tool as MCP Tool Server
+
+    Note over User: User authenticates at IdP out of band<br/>and obtains a JWT containing may_act
+    User->>Agent: Request with user JWT<br/>(may_act = agent SA)
+    Agent->>GW: Outbound call to MCP tool route<br/>Authorization: Bearer <user JWT>
+
+    rect rgb(220, 240, 255)
+    Note over GW, STS: Token exchange runs INSIDE the gateway<br/>(BackendAuthPolicy.tokenExchange — agent is unaware)
+    GW->>STS: POST /token<br/>grant_type=token-exchange<br/>subject_token=user JWT<br/>actor_token=agent K8s SA token
+    Note right of STS: Validate user JWT (JWKS)<br/>Validate actor token (K8s)<br/>Verify may_act.sub == actor.sub
+    STS-->>GW: New OBO token signed by AGW<br/>(sub=user, act.sub=agent SA)
+    end
+
+    GW->>Tool: Call with OBO token
+    Note right of Tool: Policies enforce both<br/>sub (user) AND act (agent)
+    Tool-->>GW: Response
+    GW-->>Agent: Response
+    Agent-->>User: Result
+```
+
+#### What the three tokens look like
+
+OBO Delegation is the only pattern where the *input* JWT must carry a special claim — `may_act` — that the user pre-authorizes for a specific agent. There are **three** tokens in play: the user JWT, the agent's actor token, and the resulting OBO JWT.
+
+**Input 1 — User JWT (with `may_act`)**
+
+The user obtains this from the IdP. Critically, the IdP must be configured to mint a `may_act` claim naming the agent service account that's allowed to act on the user's behalf.
+
+```jsonc
+// Header
+{
+  "alg": "RS256",
+  "kid": "idp-key-2026-04",
+  "typ": "JWT"
+}
+// Payload
+{
+  "iss": "https://login.example.com/realms/agents",
+  "sub": "u-7f0a3c91",                       // the human user
+  "aud": "agent-platform",
+  "exp": 1777300000,
+  "iat": 1777296400,
+  "email": "alice@example.com",
+  "scope": "openid profile mcp:invoke",
+  "may_act": {                               // KEY: pre-authorizes a specific actor
+    "sub": "system:serviceaccount:agents:agent-runtime",
+    "iss": "https://kubernetes.default.svc"
+  }
+}
+```
+
+> Without `may_act`, the STS rejects the exchange with `invalid_request`. This claim is what makes Delegation **opt-in by the user** instead of an unrestricted swap.
+
+**Input 2 — Actor token (Kubernetes ServiceAccount JWT, projected into the agent pod)**
+
+The agent pod mounts a projected SA token at `/var/run/secrets/tokens/...` and sends it as the `actor_token`:
+
+```jsonc
+// Payload (Kubernetes-issued)
+{
+  "iss": "https://kubernetes.default.svc",
+  "sub": "system:serviceaccount:agents:agent-runtime",  // MUST match user JWT's may_act.sub
+  "aud": ["agent-gateway-sts"],                          // audience-bound to the STS
+  "exp": 1777296700,
+  "iat": 1777296400,
+  "kubernetes.io": {
+    "namespace": "agents",
+    "serviceaccount": { "name": "agent-runtime", "uid": "..." },
+    "pod":            { "name": "agent-runtime-7d9c-x4f2", "uid": "..." }
+  }
+}
+```
+
+The STS validates this against the Kubernetes API (`TokenReview`).
+
+**Output — OBO Token (issued by AGW STS)**
+
+After the STS validates both inputs and confirms `may_act.sub == actor_token.sub`, it mints:
+
+```jsonc
+// Header
+{
+  "alg": "RS256",
+  "kid": "agw-sts-key-1",
+  "typ": "JWT"
+}
+// Payload — RFC 8693 §4.1 with full delegation chain
+{
+  "iss": "https://agentgateway.example.com/sts",   // CHANGED: AGW STS, not the IdP
+  "sub": "u-7f0a3c91",                              // PRESERVED: the user
+  "aud": "mcp-tool-server.agents.svc",              // CHANGED: scoped to the MCP tool server
+  "exp": 1777296700,
+  "iat": 1777296400,
+  "scope": "mcp:invoke",
+  "act": {                                          // NEW: full delegation chain
+    "sub": "system:serviceaccount:agents:agent-runtime",
+    "iss": "https://kubernetes.default.svc"
+  }
+}
+```
+
+What's distinctive vs. Gateway-Mediated OIDC (Variant A):
+
+| Aspect | Gateway-Mediated OIDC (Variant A) | OBO Delegation |
+|---|---|---|
+| Who triggers the exchange | The **gateway**, on every backend call | The **agent** (one hop deeper in the call chain) |
+| User JWT requirement | Any valid OIDC token | Must contain `may_act` |
+| Who the user authenticates to | The gateway (gateway is the OAuth client) | The IdP directly (user holds the JWT) |
+| Actor token | The agent's K8s SA token, but `may_act` is not required | K8s SA token + must satisfy `may_act` |
+| Output `act` claim | Set to whatever actor was supplied | Cryptographically tied to a user-authorized SA |
+| Trust story | "Gateway speaks for users" | "User explicitly delegated to this agent" |
+
+> **OBO Impersonation** uses the same exchange but **without an actor token** and produces the output JWT with `sub` only (no `act`).
 
 ---
 
@@ -762,7 +970,33 @@ spec:
 > **Docs:** [OBO Token Exchange](https://docs.solo.io/agentgateway/2.2.x/security/obo-elicitations/obo/) · [About OBO & Elicitations](https://docs.solo.io/agentgateway/2.2.x/security/obo-elicitations/about/)
 > **API / Helm:** [tokenExchange Helm values](https://docs.solo.io/agentgateway/2.2.x/reference/helm/agentgateway/)
 
-![OBO Impersonation](images/2b-obo-impersonation.png)
+> **About this diagram.** The Mermaid version below replaces the original PNG (`images/2b-obo-impersonation.png`), which rendered the token-exchange call as `Agent → STS`. In agentgateway, the proxy is what calls the STS via `BackendAuthPolicy.tokenExchange`.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant Agent as Agent
+    participant GW as Agent Gateway<br/>(Proxy)
+    participant STS as AGW Built-in STS
+    participant Tool as MCP Tool Server
+
+    User->>Agent: Request with user JWT
+    Agent->>GW: Outbound call to MCP tool route<br/>Authorization: Bearer <user JWT>
+
+    rect rgb(220, 240, 255)
+    Note over GW, STS: Token swap inside the gateway<br/>(no actor_token — this is impersonation)
+    GW->>STS: POST /token<br/>grant_type=token-exchange<br/>subject_token=user JWT
+    Note right of STS: Validate user JWT (JWKS)<br/>Mint new JWT preserving sub & scope
+    STS-->>GW: New token signed by AGW<br/>(sub=user, NO act claim)
+    end
+
+    GW->>Tool: Call with swapped token
+    Note right of Tool: Policies enforce user identity only<br/>(agent identity not tracked)
+    Tool-->>GW: Response
+    GW-->>Agent: Response
+    Agent-->>User: Result
+```
 
 ---
 
