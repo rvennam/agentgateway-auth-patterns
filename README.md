@@ -812,28 +812,22 @@ spec:
 sequenceDiagram
     autonumber
     actor User
-    participant Agent as Agent<br/>(client of MCP tools)
-    participant GW as Agent Gateway<br/>(Proxy)
+    participant Agent
+    participant GW as Agent Gateway (Proxy)
     participant STS as AGW Built-in STS
     participant Tool as MCP Tool Server
 
-    Note over User: User authenticates at IdP out of band<br/>and obtains a JWT containing may_act
-    User->>Agent: Request with user JWT<br/>(may_act = agent SA)
-    Agent->>GW: Outbound call to MCP tool route<br/>Authorization: Bearer <user JWT>
-
-    rect rgb(220, 240, 255)
-    Note over GW, STS: Token exchange runs INSIDE the gateway<br/>(BackendAuthPolicy.tokenExchange — agent is unaware)
-    GW->>STS: POST /token<br/>grant_type=token-exchange<br/>subject_token=user JWT<br/>actor_token=agent K8s SA token
-    Note right of STS: Validate user JWT (JWKS)<br/>Validate actor token (K8s)<br/>Verify may_act.sub == actor.sub
-    STS-->>GW: New OBO token signed by AGW<br/>(sub=user, act.sub=agent SA)
-    end
-
+    User->>Agent: Request with user JWT (contains may_act)
+    Agent->>GW: Authorization: Bearer <user JWT>
+    GW->>STS: POST /token (subject_token=user JWT, actor_token=agent K8s SA)
+    STS-->>GW: OBO token (sub=user, act.sub=agent)
     GW->>Tool: Call with OBO token
-    Note right of Tool: Policies enforce both<br/>sub (user) AND act (agent)
     Tool-->>GW: Response
     GW-->>Agent: Response
     Agent-->>User: Result
 ```
+
+> **Where the work happens:** the gateway proxy intercepts the agent's outbound call, posts to the STS (`grant_type=urn:ietf:params:oauth:grant-type:token-exchange`), receives the new JWT, and forwards it to the tool. The STS verifies that `may_act.sub` in the user JWT matches the `sub` of the actor token. The tool validates `sub` (user) **and** `act` (agent) before serving the request.
 
 #### What the three tokens look like
 
@@ -976,27 +970,22 @@ spec:
 sequenceDiagram
     autonumber
     actor User
-    participant Agent as Agent
-    participant GW as Agent Gateway<br/>(Proxy)
+    participant Agent
+    participant GW as Agent Gateway (Proxy)
     participant STS as AGW Built-in STS
     participant Tool as MCP Tool Server
 
     User->>Agent: Request with user JWT
-    Agent->>GW: Outbound call to MCP tool route<br/>Authorization: Bearer <user JWT>
-
-    rect rgb(220, 240, 255)
-    Note over GW, STS: Token swap inside the gateway<br/>(no actor_token — this is impersonation)
-    GW->>STS: POST /token<br/>grant_type=token-exchange<br/>subject_token=user JWT
-    Note right of STS: Validate user JWT (JWKS)<br/>Mint new JWT preserving sub & scope
-    STS-->>GW: New token signed by AGW<br/>(sub=user, NO act claim)
-    end
-
+    Agent->>GW: Authorization: Bearer <user JWT>
+    GW->>STS: POST /token (subject_token=user JWT, NO actor_token)
+    STS-->>GW: New token (sub=user, NO act claim)
     GW->>Tool: Call with swapped token
-    Note right of Tool: Policies enforce user identity only<br/>(agent identity not tracked)
     Tool-->>GW: Response
     GW-->>Agent: Response
     Agent-->>User: Result
 ```
+
+> **Where the work happens:** same gateway-mediated flow as Delegation, but the gateway sends only `subject_token` to the STS — no actor token, no `may_act` check. The STS mints a fresh JWT with the same `sub` and scopes, signed by AGW, and **omits the `act` claim**. Downstream policies see only the user identity.
 
 ---
 
