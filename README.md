@@ -594,6 +594,69 @@ Uses agentgateway's built-in token exchange server. `mode: ExchangeOnly`. STS is
 
 ![Built-in STS](images/13-gateway-mediated-builtin.png)
 
+#### What the two tokens look like
+
+**Input — User JWT** (issued by the IdP, received by the gateway after the OIDC dance):
+
+```jsonc
+// Header
+{
+  "alg": "RS256",
+  "kid": "idp-key-2026-04",
+  "typ": "JWT"
+}
+// Payload
+{
+  "iss": "https://login.example.com/realms/agents",
+  "sub": "u-7f0a3c91",                       // the human user
+  "aud": "agentgateway-browser",             // the gateway's IdP client_id
+  "exp": 1777300000,
+  "iat": 1777296400,
+  "email": "alice@example.com",
+  "name": "Alice Anderson",
+  "scope": "openid profile email",
+  "preferred_username": "alice"
+}
+```
+
+**Output — Exchanged JWT** (issued by the AGW Built-in STS, forwarded to the agent):
+
+```jsonc
+// Header
+{
+  "alg": "RS256",
+  "kid": "agw-sts-key-1",
+  "typ": "JWT"
+}
+// Payload — RFC 8693 §4.1
+{
+  "iss": "https://agentgateway.example.com/sts",   // CHANGED: now the gateway's STS
+  "sub": "u-7f0a3c91",                              // PRESERVED: same user
+  "aud": "mcp-server.agents.svc",                   // CHANGED: now the agent/MCP server
+  "exp": 1777296700,                                // SHORTER: typically minutes, not hours
+  "iat": 1777296400,
+  "scope": "mcp:invoke",                            // RESHAPED: only what the agent needs
+  "act": {                                          // NEW: RFC 8693 actor claim
+    "sub": "system:serviceaccount:agentgateway-system:agent-runtime",
+    "iss": "https://kubernetes.default.svc"
+  }
+}
+```
+
+What changed and why:
+
+| Field | User JWT | Exchanged JWT | Why |
+|---|---|---|---|
+| `iss` | IdP | AGW STS | Agent only trusts the STS issuer — IdP is invisible to it |
+| `sub` | user id | user id | Preserved so downstream policy can authorize the user |
+| `aud` | gateway client_id | agent / MCP server id | Token is now scoped to the resource it's actually calling |
+| `exp` | hours | minutes | Exchange-only tokens are short-lived; gateway re-exchanges on demand |
+| `scope` | full IdP scopes | minimum needed | Reshaped — agent doesn't need `email`, `profile` |
+| `act` | (none) | `{sub: agent SA, iss: K8s}` | RFC 8693 actor claim — auditable agent-on-behalf-of-user |
+| signature | IdP private key | AGW STS private key | Agent verifies against `<sts>/.well-known/jwks.json` |
+
+> **OBO Impersonation** produces the same shape as the Exchanged JWT above but **omits the `act` claim** — downstream services see only the user.
+
 ### Variant B: External STS (Entra ID)
 
 Uses Microsoft Entra ID as an external token-exchange provider via Entra's OBO flow (`urn:ietf:params:oauth:grant-type:jwt-bearer`).
