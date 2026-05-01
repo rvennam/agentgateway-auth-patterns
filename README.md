@@ -199,7 +199,6 @@ sequenceDiagram
     end
 ```
 
-![API Key Auth](images/8-api-key-auth.png)
 
 ---
 
@@ -251,7 +250,6 @@ sequenceDiagram
     end
 ```
 
-![Basic Auth](images/9-basic-auth.png)
 
 ---
 
@@ -329,7 +327,6 @@ sequenceDiagram
     end
 ```
 
-![BYO External Auth](images/10-byo-ext-auth.png)
 
 ---
 
@@ -437,7 +434,6 @@ sequenceDiagram
     end
 ```
 
-![Standard OIDC Authentication](images/1-oidc-auth.png)
 
 ---
 
@@ -535,7 +531,6 @@ sequenceDiagram
     end
 ```
 
-![Mutual TLS](images/mtls.png)
 
 ---
 
@@ -626,7 +621,6 @@ sequenceDiagram
     GW-->>MCP: MCP response
 ```
 
-![MCP OAuth + DCR](images/11-mcp-oauth.png)
 
 ---
 
@@ -719,7 +713,6 @@ sequenceDiagram
     GW-->>User: Result
 ```
 
-![Built-in STS](images/13-gateway-mediated-builtin.png)
 
 #### What the two tokens look like
 
@@ -817,7 +810,6 @@ sequenceDiagram
     GW-->>User: Result
 ```
 
-![External STS](images/13-gateway-mediated-external.png)
 
 #### What the two tokens look like
 
@@ -1203,7 +1195,6 @@ sequenceDiagram
     GW-->>User: Result
 ```
 
-![Double OAuth Flow](images/4-double-oauth.png)
 
 ---
 
@@ -1475,7 +1466,6 @@ sequenceDiagram
     GW-->>Client: Response
 ```
 
-![Passthrough Token](images/5-passthrough.png)
 
 ---
 
@@ -1540,7 +1530,6 @@ sequenceDiagram
     GW-->>Client: Response (all users share one upstream token)
 ```
 
-![Static Secret Injection](images/6-static-secret.png)
 
 ---
 
@@ -1607,7 +1596,6 @@ sequenceDiagram
     GW-->>Client: Response (per-tier upstream credential)
 ```
 
-![Claim-Based Token Mapping](images/7-claim-based-mapping.png)
 
 ---
 
@@ -1681,7 +1669,6 @@ sequenceDiagram
     GW-->>Client: Result
 ```
 
-![Elicitation](images/3-elicitation.png)
 
 ---
 
