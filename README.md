@@ -13,10 +13,6 @@ A practical guide to the authentication patterns supported by agentgateway. Each
 | **[OSS]** | Configurable using only the OSS `agentgateway.dev` API surface — works on the standalone OSS Rust binary and on Solo Enterprise clusters. The capability ships in the open-source data plane. |
 | **[Enterprise]** | Requires **Solo Enterprise for agentgateway**. Depends on one or more enterprise-only components: the `EnterpriseAgentgatewayPolicy` / `AuthConfig` CRDs (`enterpriseagentgateway.solo.io`, `extauth.solo.io`), the Enterprise external auth service, the built-in **STS** (Security Token Service), or the **Solo Enterprise UI**. |
 
-> **How this was classified.** Each tier tag was validated against the OSS proto (`agentgateway/crates/protos/proto/resource.proto`) and the Enterprise proto (`agentgateway-enterprise/crates/protos/proto/resource.proto`). The single auth feature gated to the Enterprise proto today is `BackendAuthPolicy.token_exchange` (with `EXCHANGE_ONLY` and `ELICIT_ONLY` modes) — every Token-Exchange-based pattern below transitively requires Enterprise.
-
-> **A note on hybrid usage.** On Kubernetes, you typically install Solo Enterprise even when using "OSS" patterns, because the Enterprise control plane reconciles both `agentgateway.dev` (OSS) and `enterpriseagentgateway.solo.io` (Enterprise wrapper) CRDs. **OSS** here means "the underlying capability is in the OSS data plane and you can run it standalone." **Enterprise** means there is no equivalent in the OSS binary alone.
-
 ---
 
 ## Table of Contents
@@ -90,8 +86,6 @@ Pick the **first** pattern that matches your scenario:
 | Static Secret Injection | OSS | Outbound | Shared credential | One backend key, many users |
 | Claim-Based Token Mapping | OSS | Outbound | Per-claim mapped credential | Tiered access, per-team API keys |
 | Elicitation | Enterprise | Outbound | Per-user upstream OAuth token | On-demand 3rd-party authorization |
-
-> The YAML snippets below favor **OSS `AgentgatewayPolicy`** wherever it works (so the same config runs on the standalone binary). Where the workshop demo uses an `EnterpriseAgentgatewayPolicy` wrapper, that is called out explicitly.
 
 ---
 
@@ -942,8 +936,6 @@ spec:
 > **Docs:** [OBO Token Exchange](https://docs.solo.io/agentgateway/2.2.x/security/obo-elicitations/obo/) · [About OBO & Elicitations](https://docs.solo.io/agentgateway/2.2.x/security/obo-elicitations/about/)
 > **API / Helm:** [tokenExchange Helm values](https://docs.solo.io/agentgateway/2.2.x/reference/helm/agentgateway/)
 
-> **About this diagram.** The Mermaid version below replaces the original PNG (`images/2a-obo-delegation.png`), which rendered the token-exchange call as `Agent → STS`. In agentgateway, `BackendAuthPolicy.tokenExchange` runs in the proxy data plane — the **gateway** is what calls the STS, transparently to the agent.
-
 ```mermaid
 sequenceDiagram
     autonumber
@@ -1099,8 +1091,6 @@ spec:
 
 > **Docs:** [OBO Token Exchange](https://docs.solo.io/agentgateway/2.2.x/security/obo-elicitations/obo/) · [About OBO & Elicitations](https://docs.solo.io/agentgateway/2.2.x/security/obo-elicitations/about/)
 > **API / Helm:** [tokenExchange Helm values](https://docs.solo.io/agentgateway/2.2.x/reference/helm/agentgateway/)
-
-> **About this diagram.** The Mermaid version below replaces the original PNG (`images/2b-obo-impersonation.png`), which rendered the token-exchange call as `Agent → STS`. In agentgateway, the proxy is what calls the STS via `BackendAuthPolicy.tokenExchange`.
 
 ```mermaid
 sequenceDiagram
@@ -1538,8 +1528,6 @@ sequenceDiagram
 > **When to use:** Different users, teams, or tiers should call the backend with **different** upstream credentials (e.g., free vs. paid OpenAI keys; per-team Anthropic keys). You don't need user OAuth — a static map keyed by JWT claim is enough.
 
 Validate the inbound JWT, then use a CEL request transformation to set the `Authorization` header based on a JWT claim (`sub`, `team`, `tier`, etc.).
-
-> **OSS validation:** `TrafficPolicySpec.transformation.request.set` exists in the OSS proto and accepts CEL expressions. Combined with OSS `jwtAuthentication`, the full pattern runs on the OSS data plane. The original workshop demo uses `EnterpriseAgentgatewayPolicy` because Enterprise CRDs are the standard control-plane surface on Kubernetes.
 
 ### YAML — OSS (JWT claim → Authorization header via CEL)
 
