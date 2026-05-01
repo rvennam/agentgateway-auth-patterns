@@ -31,7 +31,7 @@ A practical guide to the authentication patterns supported by agentgateway. Each
   - [OBO Delegation (Dual Identity)](#obo-delegation-dual-identity-enterprise) — [Enterprise]
   - [OBO Impersonation (Token Swap)](#obo-impersonation-token-swap-enterprise) — [Enterprise]
   - [Double OAuth Flow (OIDC + Elicitation)](#double-oauth-flow-oidc--elicitation-enterprise) — [Enterprise]
-  - [Eager Upstream OAuth (Gateway as OAuth Issuer)](#eager-upstream-oauth-gateway-as-oauth-issuer-enterprise--preview) — [Enterprise · Preview]
+  - [Eager Upstream OAuth (Gateway as OAuth Issuer)](#eager-upstream-oauth-gateway-as-oauth-issuer-enterprise) — [Enterprise]
 - [Upstream / Backend Auth](#upstream--backend-auth)
   - [Passthrough Token](#passthrough-token-oss) — [OSS]
   - [Static Secret Injection (Shared Credential)](#static-secret-injection-shared-credential-oss) — [OSS]
@@ -59,7 +59,7 @@ Pick the **first** pattern that matches your scenario:
 | Carry **both** user and agent identity to downstream services | [OBO Delegation](#obo-delegation-dual-identity-enterprise) | Enterprise |
 | Carry the user's identity only, replacing the IdP token | [OBO Impersonation](#obo-impersonation-token-swap-enterprise) | Enterprise |
 | Have one user complete OAuth flows for two different APIs in sequence | [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) | Enterprise |
-| One SSO login → multiple upstream APIs (GitHub/GitLab/Atlassian), no Solo UI prompts | [Eager Upstream OAuth](#eager-upstream-oauth-gateway-as-oauth-issuer-enterprise--preview) | Enterprise · Preview |
+| One SSO login → multiple upstream APIs (GitHub/GitLab/Atlassian), no Solo UI prompts | [Eager Upstream OAuth](#eager-upstream-oauth-gateway-as-oauth-issuer-enterprise) | Enterprise |
 | Forward the client's original `Authorization` header to the backend | [Passthrough Token](#passthrough-token-oss) | OSS |
 | Inject a single shared API key for all users into upstream calls | [Static Secret Injection](#static-secret-injection-shared-credential-oss) | OSS |
 | Inject a different upstream key per user, team, or tier | [Claim-Based Token Mapping](#claim-based-token-mapping-oss) | OSS |
@@ -81,7 +81,7 @@ Pick the **first** pattern that matches your scenario:
 | OBO Delegation | Enterprise | Token exchange | Gateway-issued JWT (`sub` + `act`) | Auditable user-on-behalf-of-agent |
 | OBO Impersonation | Enterprise | Token exchange | Gateway-issued JWT (`sub` only) | Hiding IdP tokens from agents |
 | Double OAuth Flow | Enterprise | Token exchange | Downstream JWT + upstream token | Agents calling 3rd-party APIs as user |
-| Eager Upstream OAuth | Enterprise · Preview | Token exchange | Upstream provider token | Single SSO → many third-party APIs |
+| Eager Upstream OAuth | Enterprise | Token exchange | Upstream provider token | Single SSO → many third-party APIs |
 | Passthrough Token | OSS | Outbound | Original client token | Federated identity, opaque tokens |
 | Static Secret Injection | OSS | Outbound | Shared credential | One backend key, many users |
 | Claim-Based Token Mapping | OSS | Outbound | Per-claim mapped credential | Tiered access, per-team API keys |
@@ -1188,9 +1188,9 @@ sequenceDiagram
 
 ---
 
-## Eager Upstream OAuth (Gateway as OAuth Issuer) `[Enterprise · Preview]`
+## Eager Upstream OAuth (Gateway as OAuth Issuer) `[Enterprise]`
 
-> **Status:** Preview. Configuration shapes here are taken from [`solo-io/agentgateway-eager-oauth`](https://github.com/solo-io/agentgateway-eager-oauth) and the feature branch [`agentgateway-enterprise/yuval-k/2oauth-working-rebase1`](https://github.com/solo-io/agentgateway-enterprise/tree/yuval-k/2oauth-working-rebase1) (image tag `2.2.0-howardjohn-oauth.0`). Field names may shift before GA.
+> **Available:** GA from Solo Enterprise for agentgateway **2.3.x**. Configuration shapes here are taken from the reference repo [`solo-io/agentgateway-eager-oauth`](https://github.com/solo-io/agentgateway-eager-oauth).
 
 > **When to use:** You expose multiple MCP servers backed by different third-party providers (GitHub, GitLab, Atlassian, Databricks…) and you want users to **sign in once via enterprise SSO** and immediately have access to every one of them — with no Solo-UI elicitation prompts and no per-provider OAuth juggling.
 
