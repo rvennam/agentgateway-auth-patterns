@@ -35,6 +35,7 @@ A practical guide to the authentication patterns supported by agentgateway. Each
   - [OBO Delegation (Dual Identity)](#obo-delegation-dual-identity-enterprise) — [Enterprise]
   - [OBO Impersonation (Token Swap)](#obo-impersonation-token-swap-enterprise) — [Enterprise]
   - [Double OAuth Flow (OIDC + Elicitation)](#double-oauth-flow-oidc--elicitation-enterprise) — [Enterprise]
+  - [Eager Upstream OAuth (Gateway as OAuth Issuer)](#eager-upstream-oauth-gateway-as-oauth-issuer-enterprise--preview) — [Enterprise · Preview]
 - [Upstream / Backend Auth](#upstream--backend-auth)
   - [Passthrough Token](#passthrough-token-oss) — [OSS]
   - [Static Secret Injection (Shared Credential)](#static-secret-injection-shared-credential-oss) — [OSS]
@@ -62,6 +63,7 @@ Pick the **first** pattern that matches your scenario:
 | Carry **both** user and agent identity to downstream services | [OBO Delegation](#obo-delegation-dual-identity-enterprise) | Enterprise |
 | Carry the user's identity only, replacing the IdP token | [OBO Impersonation](#obo-impersonation-token-swap-enterprise) | Enterprise |
 | Have one user complete OAuth flows for two different APIs in sequence | [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) | Enterprise |
+| One SSO login → multiple upstream APIs (GitHub/GitLab/Atlassian), no Solo UI prompts | [Eager Upstream OAuth](#eager-upstream-oauth-gateway-as-oauth-issuer-enterprise--preview) | Enterprise · Preview |
 | Forward the client's original `Authorization` header to the backend | [Passthrough Token](#passthrough-token-oss) | OSS |
 | Inject a single shared API key for all users into upstream calls | [Static Secret Injection](#static-secret-injection-shared-credential-oss) | OSS |
 | Inject a different upstream key per user, team, or tier | [Claim-Based Token Mapping](#claim-based-token-mapping-oss) | OSS |
@@ -83,6 +85,7 @@ Pick the **first** pattern that matches your scenario:
 | OBO Delegation | Enterprise | Token exchange | Gateway-issued JWT (`sub` + `act`) | Auditable user-on-behalf-of-agent |
 | OBO Impersonation | Enterprise | Token exchange | Gateway-issued JWT (`sub` only) | Hiding IdP tokens from agents |
 | Double OAuth Flow | Enterprise | Token exchange | Downstream JWT + upstream token | Agents calling 3rd-party APIs as user |
+| Eager Upstream OAuth | Enterprise · Preview | Token exchange | Upstream provider token | Single SSO → many third-party APIs |
 | Passthrough Token | OSS | Outbound | Original client token | Federated identity, opaque tokens |
 | Static Secret Injection | OSS | Outbound | Shared credential | One backend key, many users |
 | Claim-Based Token Mapping | OSS | Outbound | Per-claim mapped credential | Tiered access, per-team API keys |
@@ -1040,6 +1043,225 @@ spec:
 
 ---
 
+## Eager Upstream OAuth (Gateway as OAuth Issuer) `[Enterprise · Preview]`
+
+> **Status:** Preview. Configuration shapes here are taken from [`solo-io/agentgateway-eager-oauth`](https://github.com/solo-io/agentgateway-eager-oauth) and the feature branch [`agentgateway-enterprise/yuval-k/2oauth-working-rebase1`](https://github.com/solo-io/agentgateway-enterprise/tree/yuval-k/2oauth-working-rebase1) (image tag `2.2.0-howardjohn-oauth.0`). Field names may shift before GA.
+
+> **When to use:** You expose multiple MCP servers backed by different third-party providers (GitHub, GitLab, Atlassian, Databricks…) and you want users to **sign in once via enterprise SSO** and immediately have access to every one of them — with no Solo-UI elicitation prompts and no per-provider OAuth juggling.
+
+The gateway hosts its **own OAuth Authorization Server** at `/oauth-issuer/`. From an MCP client's perspective there is exactly one OAuth issuer: the gateway. Behind the scenes the gateway:
+
+1. Delegates the user's actual login to an **enterprise IdP** (Entra/Okta/Cognito) via `/oauth-issuer/callback/downstream` — same Authorization Code flow as Variant A.
+2. **Pre-stages** upstream OAuth credentials for each MCP backend at config time (static OAuth app for GitHub, Dynamic Client Registration for GitLab and Atlassian).
+3. Eagerly exchanges the downstream token into per-provider upstream tokens via `/oauth-issuer/callback/upstream`.
+4. Persists upstream tokens in **PostgreSQL** so they survive restarts and are reused across requests.
+5. Each MCP backend names the upstream secret it should use via `backend.tokenExchange.oidc.secretName`.
+
+### How it differs from the lazy patterns
+
+| | [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) | [Elicitation](#elicitation-enterprise) | **Eager Upstream OAuth** |
+|---|---|---|---|
+| OAuth issuer the MCP client sees | External IdP | External IdP + Solo UI | **The gateway itself** |
+| When upstream consent is collected | First request that needs it | First request that needs it | **At downstream login (or before)** |
+| Interactive flows the user sees | 2 (SSO + Solo UI) | 1 per provider, on demand | **1 (SSO only)** |
+| Upstream client registration | Per-provider in Solo UI | Per-provider in Solo UI | **Static config or DCR** |
+| Token storage | Solo Enterprise control plane | Solo Enterprise control plane | **PostgreSQL owned by the gateway** |
+
+### Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant MCP as MCP Client
+    participant GW as Agent Gateway (Proxy)<br/>+ /oauth-issuer
+    participant IdP as Enterprise IdP (Entra)
+    participant Upstream as Upstream Provider<br/>(GitHub / GitLab / Atlassian)
+    participant DB as Postgres
+    participant Tool as MCP Server
+
+    MCP->>GW: GET /.well-known/oauth-authorization-server/mcp/github
+    GW-->>MCP: Issuer = gateway, authorize URL = /oauth-issuer/authorize
+    MCP->>GW: /oauth-issuer/authorize (PKCE)
+    GW-->>MCP: 302 to IdP /authorize
+    User->>IdP: SSO login
+    IdP-->>GW: Callback /oauth-issuer/callback/downstream (code)
+    GW->>IdP: POST /token (code) → user JWT
+    GW-->>MCP: Issue gateway-issued auth code → access token
+    MCP->>GW: Call /mcp/github with gateway-issued token
+    GW->>DB: Look up upstream token for (user, github)
+    alt no upstream token yet
+        GW->>Upstream: OAuth code-flow (or DCR + code-flow) at /oauth-issuer/callback/upstream
+        Upstream-->>GW: Upstream access token
+        GW->>DB: Persist upstream token
+    end
+    GW->>Tool: Forward request with upstream provider token
+    Tool-->>GW: Response
+    GW-->>MCP: Response
+```
+
+### YAML — Helm values (the gateway as OAuth issuer)
+
+```yaml
+tokenExchange:
+  enabled: true
+  issuer: "enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777"
+  tokenExpiration: 24h
+  subjectValidator:
+    validatorType: remote
+    remoteConfig:
+      url: "https://login.microsoftonline.com/<tenant>/discovery/v2.0/keys"
+  database:
+    type: postgres
+    postgres:
+      url: postgres://myuser:mypassword@postgres.postgres:5432/mydb
+
+controller:
+  extraEnv:
+    KGW_OAUTH_ISSUER_CONFIG: |
+      {
+        "gateway_config": {
+          "base_url": "https://gateway.example.com/oauth-issuer"
+        },
+        "client_config": {
+          "clients": { "<entra-client-id>": "<entra-client-secret>" }
+        },
+        "downstream_server": {
+          "name": "down",
+          "client_id": "<entra-client-id>",
+          "client_secret": "<entra-client-secret>",
+          "authorize_url": "https://login.microsoftonline.com/<tenant>/oauth2/v2.0/authorize",
+          "token_url":     "https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token",
+          "redirect_uri":  "https://gateway.example.com/oauth-issuer/callback/downstream",
+          "scopes":        ["api://<entra-client-id>/agentgateway"]
+        }
+      }
+```
+
+The proxy pod also needs `STS_URI` pointing at the elicitation token endpoint:
+
+```yaml
+spec:
+  env:
+    - name: STS_URI
+      value: http://enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777/elicitations/oauth2/token
+    - name: STS_AUTH_TOKEN
+      value: /var/run/secrets/xds-tokens/xds-token
+```
+
+### YAML — Variant 1: static OAuth app (GitHub)
+
+GitHub doesn't support DCR, so you pre-register an OAuth app there and ship its `client_id` / `client_secret` to the gateway:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: github-token-exchange
+  namespace: default
+type: Opaque
+stringData:
+  app_id: "github"
+  authorize_url:     "https://github.com/login/oauth/authorize"
+  access_token_url:  "https://github.com/login/oauth/access_token"
+  client_id:         "<github-app-client-id>"
+  client_secret:     "<github-app-client-secret>"
+  mcp_resource:      "/mcp/github"
+  scopes:            "repo read:org"
+---
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: github-exchange
+  namespace: default
+spec:
+  targetRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: github
+  backend:
+    tokenExchange:
+      oidc:
+        secretName: github-token-exchange
+```
+
+### YAML — Variant 2: Dynamic Client Registration (GitLab, Atlassian)
+
+GitLab and Atlassian support RFC 7591 DCR, so the gateway can register itself as an OAuth client at runtime — no static `client_id`/`client_secret` needed in the secret:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitlab-token-exchange
+  namespace: default
+type: Opaque
+stringData:
+  app_id:       "gitlab"
+  base_url:     "https://gitlab.com"
+  mcp_resource: "/mcp/gitlab"
+  scopes:       "mcp"
+---
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: gitlab-exchange
+  namespace: default
+spec:
+  targetRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: gitlab
+  backend:
+    tokenExchange:
+      oidc:
+        secretName: gitlab-token-exchange
+```
+
+### YAML — MCP backend wiring (the same for both variants)
+
+```yaml
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: github
+spec:
+  mcp:
+    targets:
+      - name: mcp-target
+        static: { host: api.githubcopilot.com, port: 443 }
+  policies:
+    tls: {}
+    mcp:
+      authentication:
+        mode: Strict
+        issuer: https://sts.windows.net/<tenant>/
+        audiences: [api://<entra-client-id>]
+        jwks:
+          backendRef:
+            name: entra-jwks
+            kind: AgentgatewayBackend
+            group: agentgateway.dev
+          jwksPath: <tenant>/discovery/v2.0/keys
+        resourceMetadata:
+          # Tells MCP clients to find auth metadata at the gateway's own /oauth-issuer
+          agentgateway.dev/issuer-proxy: http://enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777/oauth-issuer
+          authorizationServers: [https://gateway.example.com/mcp/github]
+          resource:             https://gateway.example.com/mcp/github
+          scopesSupported:      [api://<entra-client-id>/agentgateway]
+```
+
+### Operational notes
+
+- **HTTPS is mandatory** for non-localhost OAuth callbacks. The reference setup uses ngrok or cert-manager + Let's Encrypt.
+- **Token storage in Postgres** survives restarts. SQLite in-memory is supported for dev only.
+- **DCR for GitLab** can be done out-of-band first (the README shows a `curl https://gitlab.com/oauth/register`); the runtime registration is what makes scaling to many providers tractable.
+- **Single front door:** MCP clients only need to know `https://gateway.example.com` — they discover OAuth metadata via `.well-known/oauth-authorization-server/<path>` and never see the upstream providers' OAuth endpoints directly.
+
+> **Source / repo:** [solo-io/agentgateway-eager-oauth](https://github.com/solo-io/agentgateway-eager-oauth) · [Enterprise MCP SSO with Microsoft Entra and Agentgateway (blog)](https://www.solo.io/blog/enterprise-mcp-sso-with-microsoft-entra-and-agentgateway)
+
+---
+
 # Upstream / Backend Auth
 
 Patterns for authenticating the gateway → backend hop.
@@ -1283,4 +1505,5 @@ spec:
 | OBO Delegation | Enterprise proto `TokenExchange` + `may_act` claim plumbing |
 | OBO Impersonation | Enterprise proto `TokenExchange` (`EXCHANGE_ONLY`) |
 | Double OAuth Flow | Enterprise proto `TokenExchange` (default) + `elicitation` field |
+| Eager Upstream OAuth | `solo-io/agentgateway-eager-oauth` reference repo + feature branch `agentgateway-enterprise/yuval-k/2oauth-working-rebase1`; `KGW_OAUTH_ISSUER_CONFIG`, `STS_URI=…/elicitations/oauth2/token`, `backend.tokenExchange.oidc.secretName` |
 | Elicitation | Enterprise proto `TokenExchange` (`ELICIT_ONLY`) + Solo Enterprise UI |
