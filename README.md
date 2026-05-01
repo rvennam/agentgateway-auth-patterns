@@ -1703,24 +1703,3 @@ sequenceDiagram
 | **STS** | Security Token Service. The component that issues new tokens during exchange. agentgateway has a built-in STS for OBO flows; Entra ID can act as an external STS. Enterprise-only. |
 | **`sub` claim** | The standard JWT claim identifying the subject (user or principal) the token is about. |
 
----
-
-## Appendix: How Each Pattern Was Validated
-
-| Pattern | Validation source |
-|---|---|
-| API Key Auth | OSS proto `TrafficPolicySpec.APIKey` + Enterprise `AuthConfig.apiKeyAuth` use-case |
-| Basic Auth | OSS proto `TrafficPolicySpec.BasicAuthentication` |
-| BYO External Auth | OSS proto `TrafficPolicySpec.ExternalAuth` (`ext_authz`); live cluster `agentgatewaypolicy/jwt-test` uses `extAuth` |
-| Standard OIDC / JWT | OSS proto `TrafficPolicySpec.JWT`; live cluster `agentgatewaypolicy/jwt-test` |
-| Mutual TLS | OSS proto `BackendTLS`; OSS Gateway-API `BackendTLSPolicy`; standalone example `examples/tls/config.yaml` |
-| MCP OAuth + DCR | OSS proto `BackendPolicySpec.McpAuthentication` (with `McpIDP::Keycloak`/`Auth0`); standalone example `examples/mcp-authentication/config.yaml` |
-| Passthrough Token | OSS proto `BackendAuthPolicy.Passthrough` |
-| Static Secret Injection | OSS proto `BackendAuthPolicy.Key`/`secretRef`; live cluster `agentgatewaypolicy/mcp-auth` |
-| Claim-Based Token Mapping | OSS proto `TransformationPolicy` + `JWT` |
-| Gateway-Mediated OIDC + Token Exchange | Enterprise proto `BackendAuthPolicy.token_exchange` (Enterprise-only) |
-| OBO Delegation | Enterprise proto `TokenExchange` + `may_act` claim plumbing |
-| OBO Impersonation | Enterprise proto `TokenExchange` (`EXCHANGE_ONLY`) |
-| Double OAuth Flow | Enterprise proto `TokenExchange` (default) + `elicitation` field |
-| Eager Upstream OAuth | `solo-io/agentgateway-eager-oauth` reference repo + feature branch `agentgateway-enterprise/yuval-k/2oauth-working-rebase1`; `KGW_OAUTH_ISSUER_CONFIG`, `STS_URI=…/elicitations/oauth2/token`, `backend.tokenExchange.oidc.secretName` |
-| Elicitation | Enterprise proto `TokenExchange` (`ELICIT_ONLY`) + Solo Enterprise UI |
