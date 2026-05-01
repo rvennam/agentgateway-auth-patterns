@@ -183,6 +183,22 @@ spec:
 > **Docs:** [API Key Auth](https://docs.solo.io/agentgateway/2.2.x/security/extauth/apikey/)
 > **API:** [APIKeyAuthentication (OSS)](https://docs.solo.io/agentgateway/2.2.x/reference/api/api/#apikeyauthentication) · [APIKeyAuthentication (Enterprise)](https://docs.solo.io/agentgateway/2.2.x/reference/api/solo/#apikeyauthentication)
 
+```mermaid
+sequenceDiagram
+    actor Client
+    participant GW as Agent Gateway
+    participant Backend
+    Client->>GW: Request + x-api-key: <key>
+    GW->>GW: Look up key (inline list or labeled K8s Secret)
+    alt key valid
+        GW->>Backend: Forward (+ x-user-id = secret name)
+        Backend-->>GW: Response
+        GW-->>Client: Response
+    else key invalid
+        GW-->>Client: 401 Unauthorized
+    end
+```
+
 ![API Key Auth](images/8-api-key-auth.png)
 
 ---
@@ -218,6 +234,22 @@ spec:
 
 > **Docs:** [Basic Auth](https://docs.solo.io/agentgateway/2.2.x/security/extauth/basic/)
 > **API:** [BasicAuthentication (OSS)](https://docs.solo.io/agentgateway/2.2.x/reference/api/api/#basicauthentication) · [BasicAuthentication (Enterprise)](https://docs.solo.io/agentgateway/2.2.x/reference/api/solo/#basicauthentication)
+
+```mermaid
+sequenceDiagram
+    actor Client
+    participant GW as Agent Gateway
+    participant Backend
+    Client->>GW: Request + Authorization: Basic base64(user:pass)
+    GW->>GW: Decode + verify against htpasswd (APR1 / bcrypt)
+    alt credentials valid
+        GW->>Backend: Forward request
+        Backend-->>GW: Response
+        GW-->>Client: Response
+    else credentials invalid
+        GW-->>Client: 401 + WWW-Authenticate: Basic realm
+    end
+```
 
 ![Basic Auth](images/9-basic-auth.png)
 
@@ -277,6 +309,25 @@ spec:
 
 > **Docs:** [BYO Ext Auth Service](https://docs.solo.io/agentgateway/2.2.x/security/extauth/byo-ext-auth-service/)
 > **API:** [ExtAuth (OSS)](https://docs.solo.io/agentgateway/2.2.x/reference/api/api/#extauth) · [EnterpriseAgentgatewayExtAuth](https://docs.solo.io/agentgateway/2.2.x/reference/api/solo/#enterpriseagentgatewayextauth)
+
+```mermaid
+sequenceDiagram
+    actor Client
+    participant GW as Agent Gateway
+    participant ExtAuth as Your Auth Service
+    participant Backend
+    Client->>GW: Request
+    GW->>ExtAuth: CheckRequest (gRPC ext_authz or HTTP)
+    alt ExtAuth allows
+        ExtAuth-->>GW: ALLOW + headers to inject
+        GW->>Backend: Forward request (+ injected headers)
+        Backend-->>GW: Response
+        GW-->>Client: Response
+    else ExtAuth denies
+        ExtAuth-->>GW: DENY
+        GW-->>Client: 403
+    end
+```
 
 ![BYO External Auth](images/10-byo-ext-auth.png)
 
@@ -366,6 +417,26 @@ spec:
 > **Docs:** [Set up JWT Auth](https://docs.solo.io/agentgateway/2.2.x/security/jwt/setup/) · [JWT Auth for MCP Services](https://docs.solo.io/agentgateway/2.2.x/mcp/mcp-access/) · [Keycloak as IdP](https://docs.solo.io/agentgateway/2.2.x/security/extauth/oauth/keycloak/)
 > **API:** [JWTAuthentication (OSS)](https://docs.solo.io/agentgateway/2.2.x/reference/api/api/#jwtauthentication) · [JWTAuthentication (Enterprise)](https://docs.solo.io/agentgateway/2.2.x/reference/api/solo/#jwtauthentication)
 
+```mermaid
+sequenceDiagram
+    actor Client
+    participant IdP as OIDC Provider
+    participant GW as Agent Gateway
+    participant Backend
+    Client->>IdP: Login (Authorization Code Flow, out-of-band)
+    IdP-->>Client: JWT (access_token / id_token)
+    Client->>GW: Request + Authorization: Bearer <JWT>
+    GW->>IdP: Fetch JWKS (cached per cacheDuration)
+    GW->>GW: Validate signature, iss, aud, exp
+    alt valid
+        GW->>Backend: Forward request
+        Backend-->>GW: Response
+        GW-->>Client: Response
+    else invalid
+        GW-->>Client: 401 (no bearer / bad signature)
+    end
+```
+
 ![Standard OIDC Authentication](images/1-oidc-auth.png)
 
 ---
@@ -448,6 +519,22 @@ spec:
 > **Docs:** [Set up mTLS (FrontendTLS)](https://docs.solo.io/agentgateway/2.2.x/setup/listeners/mtls/) · [BackendTLS](https://docs.solo.io/agentgateway/2.2.x/security/backendtls/)
 > **API:** [FrontendTLS (OSS)](https://docs.solo.io/agentgateway/2.2.x/reference/api/api/#frontendtls) · [BackendTLS (OSS)](https://docs.solo.io/agentgateway/2.2.x/reference/api/api/#backendtls) · [BackendTLS (Enterprise)](https://docs.solo.io/agentgateway/2.2.x/reference/api/solo/#backendtls)
 
+```mermaid
+sequenceDiagram
+    actor Client
+    participant GW as Agent Gateway (TLS terminator)
+    participant Backend
+    Client->>GW: TLS ClientHello + client cert
+    GW->>GW: FrontendTLS — validate client cert against CA
+    alt cert valid
+        GW->>Backend: BackendTLS — open new TLS conn, verify backend cert
+        Backend-->>GW: Response (over TLS)
+        GW-->>Client: Response (over TLS)
+    else cert missing or invalid
+        GW--xClient: TLS handshake failure
+    end
+```
+
 ![Mutual TLS](images/mtls.png)
 
 ---
@@ -520,6 +607,24 @@ binds:
 ```
 
 > **Docs:** [About MCP Auth](https://docs.solo.io/agentgateway/2.2.x/mcp/auth/about/) · [Set up Keycloak for MCP Auth](https://docs.solo.io/agentgateway/2.2.x/mcp/auth/keycloak/)
+
+```mermaid
+sequenceDiagram
+    participant MCP as MCP Client (Claude Code, VS Code)
+    participant GW as Agent Gateway
+    participant IdP as OIDC Provider (Keycloak / Auth0)
+    MCP->>GW: GET /.well-known/oauth-protected-resource/<path>
+    GW-->>MCP: Resource metadata
+    MCP->>GW: GET /.well-known/oauth-authorization-server/<path>
+    GW-->>MCP: Auth-server metadata (adapted for non-spec providers)
+    MCP->>IdP: POST /register (RFC 7591 Dynamic Client Registration)
+    IdP-->>MCP: client_id + client_secret (unique per MCP client)
+    MCP->>IdP: Authorization Code Flow (PKCE)
+    IdP-->>MCP: Bearer token
+    MCP->>GW: Call MCP endpoint with Bearer token
+    GW->>GW: Validate JWT (issuer, audience, JWKS)
+    GW-->>MCP: MCP response
+```
 
 ![MCP OAuth + DCR](images/11-mcp-oauth.png)
 
@@ -594,6 +699,25 @@ spec:
 ### Variant A: Built-in STS
 
 Uses agentgateway's built-in token exchange server. `mode: ExchangeOnly`. STS issues a JWT with `sub` (user) + `act` (agent).
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant GW as Agent Gateway (Proxy)
+    participant IdP as OIDC Provider
+    participant STS as AGW Built-in STS
+    participant Agent as Agent / MCP Server
+    User->>GW: Request (no session cookie)
+    GW-->>User: 302 to IdP /authorize
+    User->>IdP: Login + submit credentials
+    IdP-->>GW: Callback with code → POST /token → User JWT
+    GW-->>User: Set session cookie
+    GW->>STS: POST /token (subject_token=user JWT, actor_token=K8s SA)
+    STS-->>GW: Exchanged JWT (sub=user, act=agent)
+    GW->>Agent: Authorization: Bearer <exchanged JWT>
+    Agent-->>GW: Response
+    GW-->>User: Result
+```
 
 ![Built-in STS](images/13-gateway-mediated-builtin.png)
 
@@ -674,6 +798,23 @@ spec:
         clientSecretRef: { name: entra-client-secret }
         tenantId: <tenant-id>
         scope: "https://graph.microsoft.com/.default"
+```
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant GW as Agent Gateway (Proxy)
+    participant Entra as Entra ID
+    participant Agent as Agent / Target API
+    User->>GW: Request (no session)
+    GW-->>User: 302 to Entra /authorize
+    User->>Entra: Login
+    Entra-->>GW: Callback → User JWT (aud = gateway app)
+    GW->>Entra: POST /token (grant=jwt-bearer, scope=Graph, requested_token_use=on_behalf_of)
+    Entra-->>GW: Resource-scoped JWT (aud = Microsoft Graph, signed by Entra)
+    GW->>Agent: Authorization: Bearer <Entra-issued token>
+    Agent-->>GW: Response
+    GW-->>User: Result
 ```
 
 ![External STS](images/13-gateway-mediated-external.png)
@@ -1039,6 +1180,29 @@ spec:
 > **Docs:** [About OBO & Elicitations](https://docs.solo.io/agentgateway/2.2.x/security/obo-elicitations/about/) · [Elicitations](https://docs.solo.io/agentgateway/2.2.x/security/obo-elicitations/elicitations/)
 > **API:** [TokenExchangeMode](https://docs.solo.io/agentgateway/2.2.x/reference/api/solo/#tokenexchangemode)
 
+```mermaid
+sequenceDiagram
+    actor User
+    participant GW as Agent Gateway (Proxy)
+    participant IdP as Enterprise IdP (downstream)
+    participant SoloUI as Solo Enterprise UI
+    participant Upstream as Upstream Provider (e.g. GitHub)
+    participant Agent
+    User->>GW: Request needing upstream API
+    GW-->>User: 302 to IdP /authorize (downstream OIDC)
+    User->>IdP: Login
+    IdP-->>GW: Downstream JWT
+    GW-->>User: PENDING + elicitation URL (no upstream token yet)
+    User->>SoloUI: Open elicitation URL
+    SoloUI->>Upstream: OAuth flow (user grants consent)
+    Upstream-->>SoloUI: Upstream token
+    SoloUI->>GW: Store token, mark COMPLETED
+    User->>GW: Retry original request
+    GW->>Agent: Forward + downstream JWT + injected upstream token
+    Agent-->>GW: Response
+    GW-->>User: Result
+```
+
 ![Double OAuth Flow](images/4-double-oauth.png)
 
 ---
@@ -1297,6 +1461,20 @@ spec:
 > **Docs:** [API Keys — Passthrough Token](https://docs.solo.io/agentgateway/2.2.x/llm/api-keys/)
 > **API:** [BackendAuthPassthrough (OSS)](https://docs.solo.io/agentgateway/2.2.x/reference/api/api/#backendauthpassthrough) · [BackendAuth (OSS)](https://docs.solo.io/agentgateway/2.2.x/reference/api/api/#backendauth)
 
+```mermaid
+sequenceDiagram
+    actor Client
+    participant GW as Agent Gateway
+    participant Backend
+    Note over Client: Client already holds a token<br/>(JWT, opaque, etc.)
+    Client->>GW: Request + Authorization: Bearer <token>
+    GW->>GW: Inbound auth validates (JWT / API key) — strips header
+    GW->>GW: backend.auth.passthrough — re-attach original Authorization
+    GW->>Backend: Forward request (original Authorization preserved)
+    Backend-->>GW: Response
+    GW-->>Client: Response
+```
+
 ![Passthrough Token](images/5-passthrough.png)
 
 ---
@@ -1346,6 +1524,21 @@ spec:
 
 > **Docs:** [API Keys — Manage API Keys](https://docs.solo.io/agentgateway/2.2.x/llm/api-keys/)
 > **API:** [BackendAuth (OSS)](https://docs.solo.io/agentgateway/2.2.x/reference/api/api/#backendauth)
+
+```mermaid
+sequenceDiagram
+    actor Client
+    participant GW as Agent Gateway
+    participant Secret as K8s Secret (shared)
+    participant Backend as Upstream API (e.g. OpenAI)
+    Client->>GW: Request (authenticated as user via JWT/API key)
+    GW->>GW: Inbound auth validates user
+    GW->>Secret: Read shared upstream credential (secretRef)
+    Secret-->>GW: Authorization header value
+    GW->>Backend: Forward + Authorization: <shared token>
+    Backend-->>GW: Response
+    GW-->>Client: Response (all users share one upstream token)
+```
 
 ![Static Secret Injection](images/6-static-secret.png)
 
@@ -1401,6 +1594,19 @@ spec:
 > **Docs:** [CEL Transformations](https://docs.solo.io/agentgateway/2.2.x/traffic-management/transformations/) · [JWT Auth for MCP Services](https://docs.solo.io/agentgateway/2.2.x/mcp/mcp-access/)
 > **API:** [TransformationPolicy (OSS)](https://docs.solo.io/agentgateway/2.2.x/reference/api/api/#transformationpolicy) · [EnterpriseAgentgatewayBackendPolicy](https://docs.solo.io/agentgateway/2.2.x/reference/api/solo/#enterpriseagentgatewaybackendpolicy)
 
+```mermaid
+sequenceDiagram
+    actor Client
+    participant GW as Agent Gateway
+    participant Backend
+    Client->>GW: Request + Authorization: Bearer <user JWT>
+    GW->>GW: Validate JWT, extract claims (tier, team, sub)
+    GW->>GW: CEL transform sets Authorization based on jwt.tier<br/>(e.g. paid → key A, free → key B)
+    GW->>Backend: Forward with mapped Authorization header
+    Backend-->>GW: Response
+    GW-->>Client: Response (per-tier upstream credential)
+```
+
 ![Claim-Based Token Mapping](images/7-claim-based-mapping.png)
 
 ---
@@ -1450,6 +1656,30 @@ spec:
 
 > **Docs:** [Elicitations](https://docs.solo.io/agentgateway/2.2.x/security/obo-elicitations/elicitations/) · [About OBO & Elicitations](https://docs.solo.io/agentgateway/2.2.x/security/obo-elicitations/about/)
 > **API:** [TokenExchangeMode](https://docs.solo.io/agentgateway/2.2.x/reference/api/solo/#tokenexchangemode)
+
+```mermaid
+sequenceDiagram
+    actor Client
+    participant GW as Agent Gateway (Proxy)
+    participant STS as Token Exchange Server
+    participant SoloUI as Solo Enterprise UI
+    participant Upstream as External OAuth Provider
+    participant API as Upstream API
+    Client->>GW: Request (needs upstream OAuth token)
+    GW->>STS: Look up upstream token for this user
+    STS-->>GW: PENDING + elicitation URL
+    GW-->>Client: PENDING + elicitation URL
+    Client->>SoloUI: Open elicitation URL (browser)
+    SoloUI->>Upstream: Authorize (user consents)
+    Upstream-->>SoloUI: Authorization code → token
+    SoloUI->>STS: Complete elicitation, store token
+    Client->>GW: Retry original request
+    GW->>STS: Fetch stored token
+    STS-->>GW: Stored upstream token
+    GW->>API: Forward + inject upstream token
+    API-->>GW: Response
+    GW-->>Client: Result
+```
 
 ![Elicitation](images/3-elicitation.png)
 
