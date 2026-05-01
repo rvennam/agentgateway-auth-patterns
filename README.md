@@ -1190,7 +1190,7 @@ sequenceDiagram
 
 ## Eager Upstream OAuth (Gateway as OAuth Issuer) `[Enterprise]`
 
-> **Available:** GA from Solo Enterprise for agentgateway **2.3.x**. Configuration shapes here are taken from the reference repo [`solo-io/agentgateway-eager-oauth`](https://github.com/solo-io/agentgateway-eager-oauth).
+> **Available:** GA from Solo Enterprise for agentgateway **2.3.x**. The canonical reference deployment is [`solo-io/mk-k8s-demos/mcp-auth`](https://github.com/solo-io/mk-k8s-demos/tree/main/mcp-auth) (Helmfile + Helm chart). Earlier prototype shapes live at [`solo-io/agentgateway-eager-oauth`](https://github.com/solo-io/agentgateway-eager-oauth).
 
 > **When to use:** You expose multiple MCP servers backed by different third-party providers (GitHub, GitLab, Atlassian, Databricks…) and you want users to **sign in once via enterprise SSO** and immediately have access to every one of them — with no Solo-UI elicitation prompts and no per-provider OAuth juggling.
 
@@ -1289,7 +1289,7 @@ The proxy pod also needs `STS_URI` pointing at the elicitation token endpoint:
 spec:
   env:
     - name: STS_URI
-      value: http://enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777/elicitations/oauth2/token
+      value: http://enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777/oauth2/token
     - name: STS_AUTH_TOKEN
       value: /var/run/secrets/xds-tokens/xds-token
 ```
@@ -1326,7 +1326,8 @@ spec:
       name: github
   backend:
     tokenExchange:
-      oidc:
+      mode: ElicitationOnly
+      elicitation:
         secretName: github-token-exchange
 ```
 
@@ -1359,7 +1360,8 @@ spec:
       name: gitlab
   backend:
     tokenExchange:
-      oidc:
+      mode: ElicitationOnly
+      elicitation:
         secretName: gitlab-token-exchange
 ```
 
@@ -1403,7 +1405,7 @@ spec:
 - **DCR for GitLab** can be done out-of-band first (the README shows a `curl https://gitlab.com/oauth/register`); the runtime registration is what makes scaling to many providers tractable.
 - **Single front door:** MCP clients only need to know `https://gateway.example.com` — they discover OAuth metadata via `.well-known/oauth-authorization-server/<path>` and never see the upstream providers' OAuth endpoints directly.
 
-> **Source / repo:** [solo-io/agentgateway-eager-oauth](https://github.com/solo-io/agentgateway-eager-oauth) · [Enterprise MCP SSO with Microsoft Entra and Agentgateway (blog)](https://www.solo.io/blog/enterprise-mcp-sso-with-microsoft-entra-and-agentgateway)
+> **Source / repo:** [solo-io/mk-k8s-demos/mcp-auth](https://github.com/solo-io/mk-k8s-demos/tree/main/mcp-auth) (canonical Helmfile + chart) · [solo-io/agentgateway-eager-oauth](https://github.com/solo-io/agentgateway-eager-oauth) (earlier prototype) · [Enterprise MCP SSO with Microsoft Entra and Agentgateway (blog)](https://www.solo.io/blog/enterprise-mcp-sso-with-microsoft-entra-and-agentgateway)
 
 ---
 
