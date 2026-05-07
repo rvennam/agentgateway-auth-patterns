@@ -535,7 +535,7 @@ sequenceDiagram
 
 > **When to use:** You're exposing MCP servers and your clients (Claude Code, VS Code extensions, in-house agents) need to onboard automatically without an admin pre-registering OAuth credentials.
 
-The gateway exposes the MCP server's OAuth metadata at `.well-known/oauth-protected-resource/<path>` and `.well-known/oauth-authorization-server/<path>`, validates inbound bearer tokens, and brokers Dynamic Client Registration (RFC 7591) at the configured IdP. Built-in adapters cover spec-compliant providers, Keycloak (non-spec — needs metadata adaptation), and Auth0.
+The gateway exposes the MCP server's OAuth metadata at `.well-known/oauth-protected-resource/<path>` and `.well-known/oauth-authorization-server/<path>`, validates inbound bearer tokens, and brokers Dynamic Client Registration (RFC 7591) at the configured IdP. Built-in adapters cover spec-compliant providers and Keycloak (non-spec — needs metadata adaptation). An Auth0 adapter exists but only injects the `audience` query parameter — see the Auth0 / Okta caveat below.
 
 ### Background: Dynamic Client Registration and MCP
 
@@ -543,7 +543,7 @@ OAuth normally assumes a human admin pre-registers each client application in th
 
 **[Dynamic Client Registration (RFC 7591)](https://datatracker.ietf.org/doc/html/rfc7591)** lets clients self-register at runtime: the client `POST`s its metadata to `registration_endpoint`, the IdP responds with a fresh `client_id` (and optionally `client_secret`), and the client uses those for the rest of the OAuth flow. The MCP authorization spec requires a `registration_endpoint` in the authorization-server metadata for exactly this reason.
 
-**Where real DCR works.** Keycloak and other spec-compliant IdPs that expose an unauthenticated registration endpoint. Use [Pattern 1 below](#yaml--oss-keycloak-with-metadata-adapter).
+**Where real DCR works.** Keycloak and other spec-compliant IdPs that expose an unauthenticated registration endpoint. See the YAML below.
 
 **Where it doesn't.** Auth0 and Okta technically support DCR, but only via their **management APIs** — admin-token-gated, rate-limited, and creating a fresh app in the IdP dashboard per call. Workable for a couple of test clients; untenable for a developer fleet running Claude Code + Cursor + VS Code + in-house agents.
 
@@ -618,7 +618,7 @@ binds:
 sequenceDiagram
     participant MCP as MCP Client (Claude Code, VS Code)
     participant GW as Agent Gateway
-    participant IdP as OIDC Provider (Keycloak / Auth0)
+    participant IdP as OIDC Provider (Keycloak / spec-compliant)
     MCP->>GW: GET /.well-known/oauth-protected-resource/<path>
     GW-->>MCP: Resource metadata
     MCP->>GW: GET /.well-known/oauth-authorization-server/<path>
