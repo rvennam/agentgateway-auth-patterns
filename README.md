@@ -26,13 +26,13 @@ A practical guide to the authentication patterns supported by agentgateway. Each
   - [Standard OIDC / JWT Authentication](#standard-oidc--jwt-authentication-oss) — [OSS]
   - [Mutual TLS (mTLS)](#mutual-tls-mtls-oss) — [OSS]
   - [MCP OAuth with Dynamic Client Registration](#mcp-oauth-with-dynamic-client-registration-oss) — [OSS]
+  - [MCP OAuth — Fake DCR for Auth0 / Okta](#mcp-oauth--fake-dcr-for-auth0--okta-enterprise) — [Enterprise]
 - [Token Exchange](#token-exchange)
   - [Gateway-Mediated OIDC + Token Exchange](#gateway-mediated-oidc--token-exchange-enterprise) — [Enterprise]
   - [OBO Delegation (Dual Identity)](#obo-delegation-dual-identity-enterprise) — [Enterprise]
   - [OBO Impersonation (Token Swap)](#obo-impersonation-token-swap-enterprise) — [Enterprise]
   - [Double OAuth Flow (OIDC + Elicitation)](#double-oauth-flow-oidc--elicitation-enterprise) — [Enterprise]
   - [Eager Upstream OAuth (Gateway as OAuth Issuer)](#eager-upstream-oauth-gateway-as-oauth-issuer-enterprise) — [Enterprise]
-    - [Single-IdP variant: fake DCR for non-permissive IdPs](#single-idp-variant-fake-dcr-for-non-permissive-idps) — [Enterprise]
 - [Upstream / Backend Auth](#upstream--backend-auth)
   - [Passthrough Token](#passthrough-token-oss) — [OSS]
   - [Static Secret Injection (Shared Credential)](#static-secret-injection-shared-credential-oss) — [OSS]
@@ -55,8 +55,8 @@ Pick the **first** pattern that matches your scenario:
 | Validate end-user JWTs from an existing IdP (Okta, Auth0, Keycloak, Entra) | [Standard OIDC / JWT](#standard-oidc--jwt-authentication-oss) | OSS |
 | Authenticate clients with X.509 certificates (no app-layer credentials) | [Mutual TLS](#mutual-tls-mtls-oss) | OSS |
 | Plug in a custom auth service (existing IAM, MFA, fraud checks) | [BYO External Auth](#byo-external-auth-grpc-ext_authz-oss) | OSS |
-| Onboard MCP clients (Claude Code, VS Code) with a permissive-DCR IdP (Keycloak, spec-compliant providers) | [MCP OAuth + DCR](#mcp-oauth-with-dynamic-client-registration-oss) | OSS |
-| Onboard MCP clients with an IdP whose DCR isn't viable at scale (Auth0, Okta, Cognito) | [Single-IdP variant of Eager OAuth](#single-idp-variant-fake-dcr-for-non-permissive-idps) | Enterprise |
+| Onboard MCP clients (Claude Code, VS Code) to Keycloak or another IdP that supports open DCR | [MCP OAuth + DCR](#mcp-oauth-with-dynamic-client-registration-oss) | OSS |
+| Onboard MCP clients to Auth0 or Okta (DCR is gated behind their management APIs) | [MCP OAuth — Fake DCR](#mcp-oauth--fake-dcr-for-auth0--okta-enterprise) | Enterprise |
 | Replace the IdP token with a gateway-issued token before reaching agents | [Gateway-Mediated OIDC + Token Exchange](#gateway-mediated-oidc--token-exchange-enterprise) | Enterprise |
 | Carry **both** user and agent identity to downstream services | [OBO Delegation](#obo-delegation-dual-identity-enterprise) | Enterprise |
 | Carry the user's identity only, replacing the IdP token | [OBO Impersonation](#obo-impersonation-token-swap-enterprise) | Enterprise |
@@ -78,8 +78,8 @@ Pick the **first** pattern that matches your scenario:
 | BYO External Auth | OSS | Inbound | Whatever your service returns | Custom auth, MFA, legacy IAM |
 | Standard OIDC / JWT | OSS | Inbound | JWT claims (`sub`, `email`, …) | End-user APIs behind an IdP |
 | Mutual TLS | OSS | Inbound + outbound | Client cert SAN/CN | Service-to-service, zero-trust |
-| MCP OAuth + DCR | OSS | Inbound | OAuth identity | MCP clients with permissive-DCR IdPs (Keycloak) |
-| Eager OAuth — Single-IdP variant | Enterprise | Inbound | OAuth identity | MCP clients with non-permissive IdPs (Auth0/Okta/Cognito) |
+| MCP OAuth + DCR | OSS | Inbound | OAuth identity | MCP clients onboarding to open-DCR IdPs (Keycloak) |
+| MCP OAuth — Fake DCR | Enterprise | Inbound | OAuth identity | MCP clients onboarding to Auth0 / Okta (admin-gated DCR) |
 | Gateway-Mediated OIDC + Token Exchange | Enterprise | Token exchange | Gateway-issued JWT (`sub` + `act`) | Decoupling agents from the IdP |
 | OBO Delegation | Enterprise | Token exchange | Gateway-issued JWT (`sub` + `act`) | Auditable user-on-behalf-of-agent |
 | OBO Impersonation | Enterprise | Token exchange | Gateway-issued JWT (`sub` only) | Hiding IdP tokens from agents |
@@ -547,11 +547,11 @@ OAuth normally assumes a human admin pre-registers each client application in th
 
 **Where it doesn't.** Auth0 and Okta technically support DCR, but only via their **management APIs** — admin-token-gated, rate-limited, and creating a fresh app in the IdP dashboard per call. Workable for a couple of test clients; untenable for a developer fleet running Claude Code + Cursor + VS Code + in-house agents.
 
-**The "fake DCR" workaround.** The gateway pretends to be the IdP for the registration step: `registration_endpoint` in the authorization-server metadata resolves to the gateway, and `/oauth-issuer/register` returns a single **pre-registered** IdP `client_id`/`client_secret` that every MCP client receives. Per-client revocation goes away — there's one IdP application backing the whole fleet — but **per-user identity is preserved**: each user still completes the IdP's authorization-code flow themselves, and the IdP-issued JWT is what the MCP backend validates. See the [Single-IdP variant of Eager OAuth](#single-idp-variant-fake-dcr-for-non-permissive-idps).
+**The "fake DCR" workaround.** The gateway pretends to be the IdP for the registration step: `registration_endpoint` in the authorization-server metadata resolves to the gateway, and `/oauth-issuer/register` returns a single **pre-registered** IdP `client_id`/`client_secret` that every MCP client receives. Per-client revocation goes away — there's one IdP application backing the whole fleet — but **per-user identity is preserved**: each user still completes the IdP's authorization-code flow themselves, and the IdP-issued JWT is what the MCP backend validates. See [MCP OAuth — Fake DCR for Auth0 / Okta](#mcp-oauth--fake-dcr-for-auth0--okta-enterprise).
 
 > **OSS vs. Enterprise:** The MCP authentication broker is in OSS (validated against the OSS proto and `examples/mcp-authentication/config.yaml`). DCR support comes from the IdP — agentgateway just brokers the OAuth metadata and validates JWTs. The Solo Enterprise UI is **not required**, but if you also want a managed admin UI for MCP server registration and a single per-cluster OAuth experience, that is part of Solo Enterprise.
 
-> **Auth0 / Okta / Cognito caveat:** The OSS Auth0 adapter (`provider: { auth0: {} }`) only prepends Auth0's required `audience` query parameter to the authorization endpoint. It does **not** rewrite `registration_endpoint` or substitute pre-registered credentials — DCR still hits Auth0 directly. In practice that fails for MCP at scale: Auth0's DCR is gated behind the Management API, rate-limited, and creates a new application per MCP client. The same constraint applies to Okta and Cognito. If your IdP doesn't have a permissive DCR endpoint like Keycloak's, use the [single-IdP variant of the Eager OAuth pattern](#single-idp-variant-fake-dcr-for-non-permissive-idps) — the gateway hosts its own OAuth AS and substitutes pre-registered credentials at `/oauth-issuer/register`.
+> **Auth0 / Okta caveat:** The OSS Auth0 adapter (`provider: { auth0: {} }`) only prepends Auth0's required `audience` query parameter to the authorization endpoint. It does **not** rewrite `registration_endpoint` or substitute pre-registered credentials — DCR still hits Auth0 directly. In practice that fails for MCP at scale: Auth0's DCR is gated behind the Management API, rate-limited, and creates a new application per MCP client. The same constraint applies to Okta. If your IdP doesn't have an open DCR endpoint like Keycloak's, use [MCP OAuth — Fake DCR for Auth0 / Okta](#mcp-oauth--fake-dcr-for-auth0--okta-enterprise) — the gateway hosts its own OAuth AS and substitutes pre-registered credentials at `/oauth-issuer/register`.
 
 ### YAML — OSS (Keycloak with metadata adapter)
 
@@ -632,6 +632,107 @@ sequenceDiagram
     GW-->>MCP: MCP response
 ```
 
+
+---
+
+## MCP OAuth — Fake DCR for Auth0 / Okta `[Enterprise]`
+
+> **When to use:** You're exposing MCP servers and your IdP is **Auth0, Okta, or another IdP that gates DCR behind a management API**. Real DCR doesn't scale to a fleet of MCP clients (Claude Code, Cursor, VS Code, in-house agents) on these IdPs. For Keycloak and other open-DCR IdPs, use [MCP OAuth + DCR](#mcp-oauth-with-dynamic-client-registration-oss) instead.
+
+The gateway hosts its own OAuth Authorization Server at `/oauth-issuer/`. From an MCP client's perspective there is exactly one OAuth issuer: the gateway. `/oauth-issuer/register` returns a **single pre-registered** IdP `client_id`/`client_secret` to every MCP client — no IdP-dashboard churn, no Management-API DCR. The gateway then brokers the authorization code flow to the IdP, and the IdP-issued JWT is validated at the MCP backend.
+
+> **Eager vs lazy:** "Eager" here means the OAuth flow runs **at MCP connect time** — when the client first establishes the MCP session — not lazily on each tool call. Once the session is up, every tool call inside it reuses the same JWT. Contrast with the lazy patterns [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) and [Elicitation](#elicitation-enterprise), where the user is prompted on demand. See [Background: DCR and MCP](#background-dynamic-client-registration-and-mcp) for what DCR is and why fake DCR exists.
+
+> **Related:** If you also need **per-upstream-provider tokens** (each MCP backend gets its own GitHub / GitLab / Atlassian token), see [Eager Upstream OAuth](#eager-upstream-oauth-gateway-as-oauth-issuer-enterprise) — same `/oauth-issuer/` machinery, plus per-backend token exchange.
+
+### Configuration overview
+
+This pattern shares its controller-side configuration with [Eager Upstream OAuth's Helm values](#yaml--helm-values-the-gateway-as-oauth-issuer): the `tokenExchange.enabled` block, the `KGW_OAUTH_ISSUER_CONFIG` env var, the `oauth-issuer` HTTPRoute, and the `STS_URI` env on the proxy. **Skip the multi-upstream Variants 1 and 2** — no per-upstream secret, no `backend.tokenExchange` policy. The single pre-registered IdP credentials live in `client_config.clients` and are returned to every MCP client at `/oauth-issuer/register`.
+
+### Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant MCP as MCP Client
+    participant GW as Agent Gateway<br/>+ /oauth-issuer
+    participant IdP as IdP<br/>(Auth0 / Okta)
+    participant Tool as MCP Server
+
+    MCP->>GW: GET /.well-known/oauth-authorization-server/mcp
+    GW-->>MCP: AS metadata — registration_endpoint, authorize_url, token_url<br/>all point at gateway's /oauth-issuer/*
+    MCP->>GW: POST /oauth-issuer/register (RFC 7591 DCR)
+    Note over GW: Fake DCR — returns pre-registered client_id from<br/>KGW_OAUTH_ISSUER_CONFIG.client_config.clients<br/>(no call to IdP)
+    GW-->>MCP: client_id (+ client_secret)
+    MCP->>GW: GET /oauth-issuer/authorize (PKCE)
+    GW-->>MCP: 302 to IdP /authorize<br/>(using downstream_server.client_id/secret)
+    User->>IdP: SSO login
+    IdP-->>GW: Callback /oauth-issuer/callback/... (code)
+    GW->>IdP: POST /token (code -> JWT)
+    IdP-->>GW: IdP-issued JWT
+    GW-->>MCP: Gateway auth code -> IdP JWT
+    MCP->>GW: Call /mcp with Bearer (IdP JWT)
+    GW->>GW: Validate JWT (issuer, audience, IdP JWKS)
+    GW->>Tool: Forward request with IdP JWT
+    Tool-->>GW: Response
+    GW-->>MCP: Response
+```
+
+The DCR substitution at step 4 is the whole point of the pattern: `registration_endpoint` resolves to the gateway, not the IdP, so MCP clients never hit the IdP's rate-limited Management-API DCR.
+
+### MCP authentication policy
+
+The standard JWT-validation shape with one critical annotation that flips the AS metadata to point at the gateway:
+
+```yaml
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: mcp-auth-eager
+spec:
+  targetRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: mcp-backend
+  backend:
+    mcp:
+      authentication:
+        mode: Strict
+        issuer: https://your-tenant.auth0.com/        # trailing slash matters for Auth0
+        audiences: [https://your-api/]
+        jwks:
+          backendRef:
+            name: idp-jwks
+            kind: AgentgatewayBackend
+            group: agentgateway.dev
+          jwksPath: .well-known/jwks.json             # no leading slash — controller appends one
+        resourceMetadata:
+          # Critical: tells the gateway to serve the eager-OAuth issuer's metadata at
+          # .well-known/oauth-authorization-server/<path> so registration_endpoint points
+          # at the gateway, not the IdP. Without this, MCP clients DCR against the IdP
+          # directly and hit the rate-limit / Mgmt-API problem this pattern exists to solve.
+          agentgateway.dev/issuer-proxy: http://enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777/oauth-issuer
+          authorizationServers: [https://gateway.example.com/mcp]
+          resource:             https://gateway.example.com/mcp
+```
+
+### Per-IdP gotchas (Auth0 vs Okta)
+
+The pattern is identical for both IdPs; the per-IdP setup details differ in non-obvious ways. Both columns below are validated against runnable workshop labs.
+
+| Concern | Auth0 | Okta |
+|---|---|---|
+| `issuer` value | `https://<tenant>.auth0.com/` — **trailing slash required**. Auth0 puts it in the `iss` claim and the policy compares literally. | `https://<domain>/oauth2/<authz-server-id>` (typically `default`) — **no trailing slash**. The org server (no `/oauth2/...`) shifts every path; use a custom authz server. |
+| Audience handling | `KGW_OAUTH_ISSUER_CONFIG.downstream_server` has no `audience` field, so Auth0 won't mint API-scoped tokens unless you set the audience as the **tenant default** (Settings → API Authorization Settings → Default Audience), or drop `audiences` from the policy and validate issuer-only. | `aud` comes from the authz server's "Audience" setting (Security → API → Authorization Servers → *your-server* → Settings). No `?audience=` injection needed; just match the policy's `audiences` to whatever the server is issuing. |
+| JWKS path (in `mcp.authentication.jwks.jwksPath`) | `.well-known/jwks.json` | `oauth2/<authz-server-id>/v1/keys` (custom authz server) — `oauth2/v1/keys` if you're using the org server (issuer = `https://<domain>`). No leading slash — the controller appends one. |
+| Callback URL registration | Both `…/oauth-issuer/callback/downstream` AND `…/oauth-issuer/callback/upstream` must be in the Auth0 app's Allowed Callback URLs. Registering only one yields `invalid_request: callback url not allowed` after login. | Both required as Sign-in redirect URIs. Single-callback rejection: `The 'redirect_uri' parameter must be a Login redirect URI`. |
+
+> **Walkthroughs (runnable end-to-end with MCP Inspector):**
+> - **Auth0** — [Lab 003 (gist)](https://gist.github.com/rvennam/26c3ae46c2f9b2342613a304ec78ca13#file-003-oidc-authentication-md) · [`mcp-eager-auth-auth0.md` (workshop)](https://github.com/solo-io/fe-enterprise-agentgateway-workshop/blob/main/mcp-eager-auth-auth0.md)
+> - **Okta** — [`mcp-eager-auth-okta.md` (workshop)](https://github.com/solo-io/fe-enterprise-agentgateway-workshop/blob/main/mcp-eager-auth-okta.md)
+>
+> Both labs cover HTTPS/cert setup, Postgres, the full Helm-values block, MCP Inspector flow, and a CLI check that `registration_endpoint` actually got rewritten to the gateway.
 
 ---
 
@@ -1211,18 +1312,17 @@ sequenceDiagram
 
 > **When to use:** You expose multiple MCP servers backed by different third-party providers (GitHub, GitLab, Atlassian, Databricks…) and you want users to **sign in once via enterprise SSO** and immediately have access to every one of them — with no Solo-UI elicitation prompts and no per-provider OAuth juggling.
 
-The gateway hosts its **own OAuth Authorization Server** at `/oauth-issuer/`. From an MCP client's perspective there is exactly one OAuth issuer: the gateway. The same `/oauth-issuer/` machinery serves two distinct use cases:
-
-- **[Single-IdP / fake DCR](#single-idp-variant-fake-dcr-for-non-permissive-idps)** — gateway is the AS, brokers the authorization code flow to one IdP, and the IdP's JWT goes straight to the MCP backend. Useful when the IdP doesn't support practical DCR (Auth0, Okta, Cognito).
-- **Multi-upstream eager OAuth** — gateway is the AS **and** eagerly exchanges the downstream user identity for per-upstream-provider tokens (GitHub, GitLab, Atlassian, …) so each MCP backend gets a provider-specific token. See [Variants 1/2](#yaml--variant-1-static-oauth-app-github) below.
-
-For the multi-upstream case, the gateway:
+The gateway hosts its **own OAuth Authorization Server** at `/oauth-issuer/`. From an MCP client's perspective there is exactly one OAuth issuer: the gateway. Behind the scenes the gateway:
 
 1. Delegates the user's actual login to an **enterprise IdP** (Entra/Okta/Cognito) via `/oauth-issuer/callback/downstream` — same Authorization Code flow as Variant A.
 2. **Pre-stages** upstream OAuth credentials for each MCP backend at config time (static OAuth app for GitHub, Dynamic Client Registration for GitLab and Atlassian).
 3. Eagerly exchanges the downstream token into per-provider upstream tokens via `/oauth-issuer/callback/upstream`.
 4. Persists upstream tokens in **PostgreSQL** so they survive restarts and are reused across requests.
 5. Each MCP backend names the upstream secret it should use via `backend.tokenExchange.oidc.secretName`.
+
+> **What does "Eager" mean here?** The OAuth flow with each upstream provider runs **at MCP connect time** — when the client first establishes the MCP session — not lazily on the first tool call that needs the token. Once the session is up, every tool call inside it reuses the cached upstream tokens without further user interaction. Contrast with the lazy patterns [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) and [Elicitation](#elicitation-enterprise), where the user is prompted on demand whenever a request needs a fresh upstream token.
+
+> **Single-IdP shape?** If you don't need per-upstream-provider tokens — i.e. one IdP, JWT goes straight to the backend, and you just need fake DCR because real DCR isn't viable on your IdP — see [MCP OAuth — Fake DCR for Auth0 / Okta](#mcp-oauth--fake-dcr-for-auth0--okta-enterprise). It uses the same `/oauth-issuer/` machinery without the per-backend `backend.tokenExchange` policy or Variants 1/2 below.
 
 ### How it differs from the lazy patterns
 
@@ -1315,104 +1415,6 @@ spec:
     - name: STS_AUTH_TOKEN
       value: /var/run/secrets/xds-tokens/xds-token
 ```
-
-### Single-IdP variant: fake DCR for non-permissive IdPs
-
-If you only have **one IdP** and no per-upstream-provider tokens to exchange — i.e. the gateway just needs to substitute fake DCR for an IdP that doesn't support practical DCR — skip the per-backend `backend.tokenExchange` entirely. The gateway still hosts its own AS at `/oauth-issuer/`, but it brokers the authorization code flow to the single IdP and the IdP's JWT goes straight to the MCP backend.
-
-Use this shape when:
-
-- Your IdP's DCR is gated behind a management API (Auth0, Okta, Cognito) and not viable at MCP-client scale.
-- You don't need per-provider tokens at the backends — the user JWT issued by your IdP is what the MCP backend validates.
-
-The Helm values and `KGW_OAUTH_ISSUER_CONFIG` block above stay the same — `client_config.clients` carries the single pre-registered IdP `client_id`/`client_secret` pair that `/oauth-issuer/register` returns. Skip Variants 1/2 below: no per-upstream secret, no `backend.tokenExchange` policy.
-
-#### Flow
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User
-    participant MCP as MCP Client
-    participant GW as Agent Gateway<br/>+ /oauth-issuer
-    participant IdP as IdP<br/>(Auth0 / Okta)
-    participant Tool as MCP Server
-
-    MCP->>GW: GET /.well-known/oauth-authorization-server/mcp
-    GW-->>MCP: AS metadata — registration_endpoint, authorize_url, token_url<br/>all point at gateway's /oauth-issuer/*
-    MCP->>GW: POST /oauth-issuer/register (RFC 7591 DCR)
-    Note over GW: Fake DCR — returns pre-registered client_id from<br/>KGW_OAUTH_ISSUER_CONFIG.client_config.clients<br/>(no call to IdP)
-    GW-->>MCP: client_id (+ client_secret)
-    MCP->>GW: GET /oauth-issuer/authorize (PKCE)
-    GW-->>MCP: 302 to IdP /authorize<br/>(using downstream_server.client_id/secret)
-    User->>IdP: SSO login
-    IdP-->>GW: Callback /oauth-issuer/callback/... (code)
-    GW->>IdP: POST /token (code -> JWT)
-    IdP-->>GW: IdP-issued JWT
-    GW-->>MCP: Gateway auth code -> IdP JWT
-    MCP->>GW: Call /mcp with Bearer (IdP JWT)
-    GW->>GW: Validate JWT (issuer, audience, IdP JWKS)
-    GW->>Tool: Forward request with IdP JWT
-    Tool-->>GW: Response
-    GW-->>MCP: Response
-```
-
-The DCR substitution at step 4 is the whole point of the pattern: `registration_endpoint` resolves to the gateway, not the IdP, so MCP clients never hit the IdP's rate-limited Management-API DCR.
-
-#### MCP authentication policy
-
-The MCP authentication policy is the standard JWT-validation shape with one critical annotation:
-
-```yaml
-apiVersion: enterpriseagentgateway.solo.io/v1alpha1
-kind: EnterpriseAgentgatewayPolicy
-metadata:
-  name: mcp-auth-eager
-spec:
-  targetRefs:
-    - group: agentgateway.dev
-      kind: AgentgatewayBackend
-      name: mcp-backend
-  backend:
-    mcp:
-      authentication:
-        mode: Strict
-        issuer: https://your-tenant.auth0.com/        # trailing slash matters for Auth0
-        audiences: [https://your-api/]
-        jwks:
-          backendRef:
-            name: idp-jwks
-            kind: AgentgatewayBackend
-            group: agentgateway.dev
-          jwksPath: .well-known/jwks.json             # no leading slash — controller appends one
-        resourceMetadata:
-          # Critical: tells the gateway to serve the eager-OAuth issuer's metadata at
-          # .well-known/oauth-authorization-server/<path> so registration_endpoint points
-          # at the gateway, not the IdP. Without this, MCP clients DCR against the IdP
-          # directly and hit the rate-limit / Mgmt-API problem this pattern exists to solve.
-          agentgateway.dev/issuer-proxy: http://enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777/oauth-issuer
-          authorizationServers: [https://gateway.example.com/mcp]
-          resource:             https://gateway.example.com/mcp
-```
-
-#### Per-IdP gotchas (Auth0 vs Okta)
-
-The pattern is identical for both IdPs; the per-IdP setup details differ in non-obvious ways. Both columns below are validated against runnable workshop labs.
-
-| Concern | Auth0 | Okta |
-|---|---|---|
-| `issuer` value | `https://<tenant>.auth0.com/` — **trailing slash required**. Auth0 puts it in the `iss` claim and the policy compares literally. | `https://<domain>/oauth2/<authz-server-id>` (typically `default`) — **no trailing slash**. The org server (no `/oauth2/...`) shifts every path; use a custom authz server. |
-| Audience handling | `KGW_OAUTH_ISSUER_CONFIG.downstream_server` has no `audience` field, so Auth0 won't mint API-scoped tokens unless you set the audience as the **tenant default** (Settings → API Authorization Settings → Default Audience), or drop `audiences` from the policy and validate issuer-only. | `aud` comes from the authz server's "Audience" setting (Security → API → Authorization Servers → *your-server* → Settings). No `?audience=` injection needed; just match the policy's `audiences` to whatever the server is issuing. |
-| JWKS path (in `mcp.authentication.jwks.jwksPath`) | `.well-known/jwks.json` | `oauth2/<authz-server-id>/v1/keys` (custom authz server) — `oauth2/v1/keys` if you're using the org server (issuer = `https://<domain>`). No leading slash — the controller appends one. |
-| Callback URL registration | Both `…/oauth-issuer/callback/downstream` AND `…/oauth-issuer/callback/upstream` must be in the Auth0 app's Allowed Callback URLs. Registering only one yields `invalid_request: callback url not allowed` after login. | Both required as Sign-in redirect URIs. Single-callback rejection: `The 'redirect_uri' parameter must be a Login redirect URI`. |
-
-> **Walkthroughs (runnable end-to-end with MCP Inspector):**
-> - **Auth0** — [Lab 003 (gist)](https://gist.github.com/rvennam/26c3ae46c2f9b2342613a304ec78ca13#file-003-oidc-authentication-md) · [`mcp-eager-auth-auth0.md` (workshop)](https://github.com/solo-io/fe-enterprise-agentgateway-workshop/blob/main/mcp-eager-auth-auth0.md)
-> - **Okta** — [`mcp-eager-auth-okta.md` (workshop)](https://github.com/solo-io/fe-enterprise-agentgateway-workshop/blob/main/mcp-eager-auth-okta.md)
->
-> Both labs cover HTTPS/cert setup, Postgres, the full Helm-values block, MCP Inspector flow, and a CLI check that `registration_endpoint` actually got rewritten to the gateway.
-
----
 
 ### YAML — Variant 1: static OAuth app (GitHub)
 
@@ -1799,7 +1801,9 @@ sequenceDiagram
 |---|---|
 | **`act` claim** | An RFC 8693 JWT claim identifying the actor (the agent/service) acting on behalf of the subject. Paired with `sub`. |
 | **AuthConfig** | Solo Enterprise CRD (`extauth.solo.io/v1`) describing an external auth flow (OIDC, OAuth2, API key, OPA, etc.) consumed by the Enterprise external auth service. Used by `entExtAuth`. |
-| **DCR** | Dynamic Client Registration (RFC 7591). Lets OAuth clients register themselves with an authorization server at runtime instead of via human onboarding. |
+| **DCR** | Dynamic Client Registration (RFC 7591). Lets OAuth clients register themselves with an authorization server at runtime instead of via human onboarding. See [Background: DCR and MCP](#background-dynamic-client-registration-and-mcp) for why MCP needs it and where it works. |
+| **Eager OAuth** | An OAuth flow that runs **at MCP connect time** — when the client first establishes the MCP session — rather than lazily on each tool call. Once the session is up, every tool call inside it reuses the cached token(s). Contrasts with [Elicitation](#elicitation-enterprise) and [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) (lazy: prompt the user when a request needs a fresh token). |
+| **Fake DCR** | A workaround for IdPs whose real DCR is impractical at scale (Auth0, Okta — DCR is gated behind their management APIs). The gateway intercepts the DCR call and returns a single pre-registered IdP `client_id`/`client_secret` to every MCP client, instead of forwarding to the IdP. See [MCP OAuth — Fake DCR for Auth0 / Okta](#mcp-oauth--fake-dcr-for-auth0--okta-enterprise). |
 | **`entExtAuth`** | Enterprise field on `EnterpriseAgentgatewayPolicy.traffic` that delegates auth to the Solo Enterprise external auth service via an `AuthConfig`. |
 | **`extAuth`** | OSS field on `AgentgatewayPolicy.traffic` that delegates to a user-supplied gRPC or HTTP service via the Envoy `ext_authz` protocol. |
 | **Elicitation** | An agentgateway flow that prompts a user to complete an upstream OAuth authorization out-of-band (in the Solo UI) so the gateway can inject the resulting token on later requests. Enterprise-only. |
