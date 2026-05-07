@@ -1315,6 +1315,40 @@ Use this shape when:
 
 The Helm values and `KGW_OAUTH_ISSUER_CONFIG` block above stay the same — `client_config.clients` carries the single pre-registered IdP `client_id`/`client_secret` pair that `/oauth-issuer/register` returns. Skip Variants 1/2 below: no per-upstream secret, no `backend.tokenExchange` policy.
 
+#### Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant MCP as MCP Client
+    participant GW as Agent Gateway<br/>+ /oauth-issuer
+    participant IdP as IdP<br/>(Auth0 / Okta)
+    participant Tool as MCP Server
+
+    MCP->>GW: GET /.well-known/oauth-authorization-server/mcp
+    GW-->>MCP: AS metadata — registration_endpoint, authorize_url, token_url<br/>all point at gateway's /oauth-issuer/*
+    MCP->>GW: POST /oauth-issuer/register (RFC 7591 DCR)
+    Note over GW: Fake DCR — returns pre-registered client_id from<br/>KGW_OAUTH_ISSUER_CONFIG.client_config.clients<br/>(no call to IdP)
+    GW-->>MCP: client_id (+ client_secret)
+    MCP->>GW: GET /oauth-issuer/authorize (PKCE)
+    GW-->>MCP: 302 to IdP /authorize<br/>(using downstream_server.client_id/secret)
+    User->>IdP: SSO login
+    IdP-->>GW: Callback /oauth-issuer/callback/... (code)
+    GW->>IdP: POST /token (code -> JWT)
+    IdP-->>GW: IdP-issued JWT
+    GW-->>MCP: Gateway auth code -> IdP JWT
+    MCP->>GW: Call /mcp with Bearer (IdP JWT)
+    GW->>GW: Validate JWT (issuer, audience, IdP JWKS)
+    GW->>Tool: Forward request with IdP JWT
+    Tool-->>GW: Response
+    GW-->>MCP: Response
+```
+
+The DCR substitution at step 4 is the whole point of the pattern: `registration_endpoint` resolves to the gateway, not the IdP, so MCP clients never hit the IdP's rate-limited Management-API DCR.
+
+#### MCP authentication policy
+
 The MCP authentication policy is the standard JWT-validation shape with one critical annotation:
 
 ```yaml
@@ -1349,13 +1383,22 @@ spec:
           resource:             https://gateway.example.com/mcp
 ```
 
-**Auth0-specific gotchas** (apply when the single IdP is Auth0):
+#### Per-IdP gotchas (Auth0 vs Okta)
 
-- Register **both** callback URLs in the Auth0 app: `…/oauth-issuer/callback/downstream` (non-PKCE) and `…/oauth-issuer/callback/upstream` (PKCE clients like MCP Inspector). Registering only one yields `invalid_request: callback url not allowed` after login.
-- The `KGW_OAUTH_ISSUER_CONFIG.downstream_server` block has no `audience` field. Auth0 only mints API-scoped JWTs when the `/authorize` request carries `audience`. If the issued JWT's `aud` doesn't match your API audience, set the audience as the **default audience** for the Auth0 tenant (Settings → API Authorization Settings → Default Audience), or drop `audiences` from the MCP authentication policy and validate issuer-only.
-- The `issuer` field must include the trailing slash. Auth0 puts it in the `iss` claim and the policy compares literally.
+The pattern is identical for both IdPs; the per-IdP setup details differ in non-obvious ways. Both columns below are validated against runnable workshop labs.
 
-> **Walkthrough:** [Lab 003: MCP Eager OAuth with Auth0 (Fake DCR)](https://gist.github.com/rvennam/26c3ae46c2f9b2342613a304ec78ca13#file-003-oidc-authentication-md) — runnable end-to-end against Auth0 with MCP Inspector. Covers HTTPS/cert setup, Postgres, the full helm-values block, MCP Inspector test, and a CLI check that `registration_endpoint` actually got rewritten.
+| Concern | Auth0 | Okta |
+|---|---|---|
+| `issuer` value | `https://<tenant>.auth0.com/` — **trailing slash required**. Auth0 puts it in the `iss` claim and the policy compares literally. | `https://<domain>/oauth2/<authz-server-id>` (typically `default`) — **no trailing slash**. The org server (no `/oauth2/...`) shifts every path; use a custom authz server. |
+| Audience handling | `KGW_OAUTH_ISSUER_CONFIG.downstream_server` has no `audience` field, so Auth0 won't mint API-scoped tokens unless you set the audience as the **tenant default** (Settings → API Authorization Settings → Default Audience), or drop `audiences` from the policy and validate issuer-only. | `aud` comes from the authz server's "Audience" setting (Security → API → Authorization Servers → *your-server* → Settings). No `?audience=` injection needed; just match the policy's `audiences` to whatever the server is issuing. |
+| JWKS path (in `mcp.authentication.jwks.jwksPath`) | `.well-known/jwks.json` | `oauth2/<authz-server-id>/v1/keys` (custom authz server) — `oauth2/v1/keys` if you're using the org server (issuer = `https://<domain>`). No leading slash — the controller appends one. |
+| Callback URL registration | Both `…/oauth-issuer/callback/downstream` AND `…/oauth-issuer/callback/upstream` must be in the Auth0 app's Allowed Callback URLs. Registering only one yields `invalid_request: callback url not allowed` after login. | Both required as Sign-in redirect URIs. Single-callback rejection: `The 'redirect_uri' parameter must be a Login redirect URI`. |
+
+> **Walkthroughs (runnable end-to-end with MCP Inspector):**
+> - **Auth0** — [Lab 003 (gist)](https://gist.github.com/rvennam/26c3ae46c2f9b2342613a304ec78ca13#file-003-oidc-authentication-md) · [`mcp-eager-auth-auth0.md` (workshop)](https://github.com/solo-io/fe-enterprise-agentgateway-workshop/blob/main/mcp-eager-auth-auth0.md)
+> - **Okta** — [`mcp-eager-auth-okta.md` (workshop)](https://github.com/solo-io/fe-enterprise-agentgateway-workshop/blob/main/mcp-eager-auth-okta.md)
+>
+> Both labs cover HTTPS/cert setup, Postgres, the full Helm-values block, MCP Inspector flow, and a CLI check that `registration_endpoint` actually got rewritten to the gateway.
 
 ---
 
