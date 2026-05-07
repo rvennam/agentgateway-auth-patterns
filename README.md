@@ -537,6 +537,18 @@ sequenceDiagram
 
 The gateway exposes the MCP server's OAuth metadata at `.well-known/oauth-protected-resource/<path>` and `.well-known/oauth-authorization-server/<path>`, validates inbound bearer tokens, and brokers Dynamic Client Registration (RFC 7591) at the configured IdP. Built-in adapters cover spec-compliant providers, Keycloak (non-spec — needs metadata adaptation), and Auth0.
 
+### Background: Dynamic Client Registration and MCP
+
+OAuth normally assumes a human admin pre-registers each client application in the IdP and ships its `client_id`/`client_secret` to the client. That model breaks for MCP: every developer's Claude Code, Cursor, VS Code, or in-house agent installation is a separate "client" — there is no admin in the loop to register each one.
+
+**[Dynamic Client Registration (RFC 7591)](https://datatracker.ietf.org/doc/html/rfc7591)** lets clients self-register at runtime: the client `POST`s its metadata to `registration_endpoint`, the IdP responds with a fresh `client_id` (and optionally `client_secret`), and the client uses those for the rest of the OAuth flow. The MCP authorization spec requires a `registration_endpoint` in the authorization-server metadata for exactly this reason.
+
+**Where real DCR works.** Keycloak and other spec-compliant IdPs that expose an unauthenticated registration endpoint. Use [Pattern 1 below](#yaml--oss-keycloak-with-metadata-adapter).
+
+**Where it doesn't.** Auth0 and Okta technically support DCR, but only via their **management APIs** — admin-token-gated, rate-limited, and creating a fresh app in the IdP dashboard per call. Workable for a couple of test clients; untenable for a developer fleet running Claude Code + Cursor + VS Code + in-house agents.
+
+**The "fake DCR" workaround.** The gateway pretends to be the IdP for the registration step: `registration_endpoint` in the authorization-server metadata resolves to the gateway, and `/oauth-issuer/register` returns a single **pre-registered** IdP `client_id`/`client_secret` that every MCP client receives. Per-client revocation goes away — there's one IdP application backing the whole fleet — but **per-user identity is preserved**: each user still completes the IdP's authorization-code flow themselves, and the IdP-issued JWT is what the MCP backend validates. See the [Single-IdP variant of Eager OAuth](#single-idp-variant-fake-dcr-for-non-permissive-idps).
+
 > **OSS vs. Enterprise:** The MCP authentication broker is in OSS (validated against the OSS proto and `examples/mcp-authentication/config.yaml`). DCR support comes from the IdP — agentgateway just brokers the OAuth metadata and validates JWTs. The Solo Enterprise UI is **not required**, but if you also want a managed admin UI for MCP server registration and a single per-cluster OAuth experience, that is part of Solo Enterprise.
 
 > **Auth0 / Okta / Cognito caveat:** The OSS Auth0 adapter (`provider: { auth0: {} }`) only prepends Auth0's required `audience` query parameter to the authorization endpoint. It does **not** rewrite `registration_endpoint` or substitute pre-registered credentials — DCR still hits Auth0 directly. In practice that fails for MCP at scale: Auth0's DCR is gated behind the Management API, rate-limited, and creates a new application per MCP client. The same constraint applies to Okta and Cognito. If your IdP doesn't have a permissive DCR endpoint like Keycloak's, use the [single-IdP variant of the Eager OAuth pattern](#single-idp-variant-fake-dcr-for-non-permissive-idps) — the gateway hosts its own OAuth AS and substitutes pre-registered credentials at `/oauth-issuer/register`.
