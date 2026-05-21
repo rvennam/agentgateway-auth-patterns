@@ -2,6 +2,10 @@
 
 A practical guide to the authentication patterns supported by agentgateway. Each pattern is tagged with the **minimum tier** required (**OSS** or **Enterprise**), with a "when to use," a YAML snippet, and a diagram.
 
+> **Why an AI gateway needs its own auth patterns.** Christian Posta's [Can You Use an API Gateway as an MCP Gateway?](https://blog.christianposta.com/can-you-use-an-api-gateway-for-mcp/) frames the gap well: traditional API gateways were built for stateless REST where every request carries its own context in HTTP headers and URL. MCP — the protocol AI tooling is converging on — uses persistent sessions, JSON-RPC bodies, server-initiated SSE callbacks, and multiplexes many backends behind one endpoint. None of that maps cleanly onto an API-gateway feature matrix, and the auth patterns reflect that: dynamic client registration, multi-stage OAuth (downstream + upstream), token exchange with agent-actor claims, and on-demand consent elicitation are all new territory.
+
+> Related reading from Christian Posta: [API Keys Are a Bad Idea for Enterprise LLM, Agent, and MCP Access](https://blog.christianposta.com/api-keys-are-a-bad-idea-for-enterprise-llm-agent-and-mcp-access/) · [Explaining OAuth Delegation, 'On Behalf Of', and Agent Identity for AI Agents](https://blog.christianposta.com/explaining-on-behalf-of-for-ai-agents/) · [Enterprise MCP SSO With Microsoft Entra and Agentgateway](https://blog.christianposta.com/enterprise-mcp-sso-with-microsoft-entra-and-agentgateway/) · [Connecting SaaS MCP Servers to Enterprise With Agentgateway](https://blog.christianposta.com/connecting-saas-mcp-servers-to-enterprise-with-agentgateway/) · [MCP Authorization Patterns for Upstream API Calls](https://blog.christianposta.com/mcp-authorization-patterns-upstream-api-calls/) · [Enterprise Challenges With MCP Adoption](https://blog.christianposta.com/enterprise-challenges-with-mcp-adoption/)
+
 > **Documentation:** [docs.solo.io/agentgateway/2.2.x](https://docs.solo.io/agentgateway/2.2.x/) · [Enterprise API](https://docs.solo.io/agentgateway/2.2.x/reference/api/solo/) · [OSS API](https://docs.solo.io/agentgateway/2.2.x/reference/api/api/) · [Helm Values](https://docs.solo.io/agentgateway/2.2.x/reference/helm/agentgateway/)
 
 ---
@@ -102,11 +106,44 @@ Patterns that authenticate the client calling the gateway.
 
 > **When to use:** Machine clients (CI jobs, scripts, internal services) that need a stable, long-lived credential. Avoid for end-user traffic — keys leak, don't expire, and can't carry rich identity claims.
 
-Clients authenticate with a static API key. The OSS `apiKeyAuthentication` policy validates the key inline, and Solo Enterprise extends this via `AuthConfig` to validate keys stored as labelled Kubernetes secrets and emit an `x-user-id` header for downstream rate limiting and audit.
+Clients authenticate with a static API key stored in a Kubernetes Secret. The `apiKeyAuthentication` policy validates the key inline in the data plane via `secretRef` (one Secret) or `secretSelector` (label-matched Secrets). Per-key metadata flows through to CEL authorization rules.
 
-**Trade-offs:** Simple to roll out and easy for clients to integrate. No native expiry — pair with rate limiting and audit logging.
+> **Heads up:** there is no inline-keys mode in the current API — keys must live in a Kubernetes Secret. Each top-level `stringData` entry in the Secret is one key. Use the JSON-object form to attach metadata; use the bare-string form for keys without metadata.
 
-### YAML — OSS (inline keys)
+**Modes:** `Strict` (require a valid key) or `Optional` (validate if present, allow if not).
+
+**Trade-offs:** Simple to roll out. No native expiry — pair with rate limiting and audit logging. **Do not use for end-user (human) traffic** — see [API Keys Are a Bad Idea for Enterprise LLM, Agent, and MCP Access (Christian Posta)](https://blog.christianposta.com/api-keys-are-a-bad-idea-for-enterprise-llm-agent-and-mcp-access/) — keys prove possession, not legitimacy, and broad-permission keys held by an autonomous agent will eventually be misused.
+
+### YAML — Secret with per-key metadata
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: api-keys
+  namespace: agentgateway-system
+  labels:
+    purpose: api-key
+stringData:
+  # JSON-object form — key + arbitrary metadata
+  alice-laptop: |
+    { "key": "k-7f0a3c91-...",
+      "metadata": {
+        "user": "alice@example.com",
+        "team": "platform",
+        "tier": "paid"
+      } }
+  ci-prod-pipeline: |
+    { "key": "k-ci-prod-abc123",
+      "metadata": {
+        "service": "github-actions",
+        "tier": "internal"
+      } }
+  # Bare-string form — no metadata
+  bob-cli: "k-bob-456"
+```
+
+### YAML — Policy (`secretRef` or `secretSelector`)
 
 ```yaml
 apiVersion: agentgateway.dev/v1alpha1
@@ -121,60 +158,13 @@ spec:
       name: my-route
   traffic:
     apiKeyAuthentication:
-      mode: Strict             # OPTIONAL | STRICT | PERMISSIVE
-      apiKeys:
-        - key: ci-system-key-abc123
-          metadata:
-            user: ci-system
-        - key: team-alpha-key-def456
-          metadata:
-            team: alpha
-```
-
-### YAML — Enterprise (secret-backed, with user-identity mapping)
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: team-alpha-key
-  namespace: agentgateway-system
-  labels:
-    provider: openai
-type: extauth.solo.io/apikey
-stringData:
-  api-key: N2YwMDIxZTEtNGUzNS1jNzgzLTRkYjAtYjE2YzRkZGVmNjcy
----
-apiVersion: extauth.solo.io/v1
-kind: AuthConfig
-metadata:
-  name: apikey-auth
-  namespace: agentgateway-system
-spec:
-  configs:
-    - apiKeyAuth:
-        headerName: x-api-key
-        labelSelector:
-          provider: openai     # match all secrets with this label
----
-apiVersion: enterpriseagentgateway.solo.io/v1alpha1
-kind: EnterpriseAgentgatewayPolicy
-metadata:
-  name: apikey-auth
-  namespace: agentgateway-system
-spec:
-  targetRefs:
-    - group: gateway.networking.k8s.io
-      kind: Gateway
-      name: agentgateway-proxy
-  traffic:
-    entExtAuth:
-      authConfigRef:
-        name: apikey-auth
-      backendRef:
-        name: ext-auth-service-enterprise-agentgateway
-        namespace: agentgateway-system
-        port: 8083
+      mode: Strict             # Strict | Optional
+      # Either secretRef (one Secret) OR secretSelector (label-matched Secrets):
+      secretSelector:
+        matchLabels:
+          purpose: api-key
+      # secretRef:
+      #   name: api-keys
 ```
 
 > **Docs:** [API Key Auth](https://docs.solo.io/agentgateway/2.2.x/security/extauth/apikey/)
@@ -201,11 +191,13 @@ sequenceDiagram
 
 ## Basic Auth (RFC 7617) `[OSS]`
 
-> **When to use:** Internal tools and low-stakes APIs where you already have htpasswd-style credentials. Not recommended for production end-user traffic — credentials travel on every request and can't be revoked individually without a re-deploy.
+> **When to use:** Internal tools and low-stakes APIs where you already have htpasswd-style credentials. Not recommended for production end-user traffic — credentials travel on every request and can't be revoked individually without a re-deploy. No path to MFA.
 
-Clients send `Authorization: Basic <base64(user:pass)>`. The gateway validates against APR1/bcrypt-hashed credentials. Storage is mutually exclusive: inline `htpasswdContent` (OSS) **or** a `users` field / `secretRef` to an htpasswd file (Enterprise).
+Clients send `Authorization: Basic <base64(user:pass)>`. The gateway validates against APR1-hashed credentials generated by `htpasswd`. Storage is mutually exclusive: a `users` list of htpasswd lines **or** a `secretRef` to a Kubernetes Secret holding an htpasswd file.
 
-### YAML — OSS
+**Modes:** `Strict` (require credentials) or `Optional` (validate if present).
+
+### YAML — inline `users` list
 
 ```yaml
 apiVersion: agentgateway.dev/v1alpha1
@@ -220,12 +212,44 @@ spec:
       name: my-route
   traffic:
     basicAuthentication:
+      mode: Strict        # Strict | Optional
+      realm: agentgateway
+      # Each entry is one htpasswd line.
+      # Generate with: htpasswd -nbm alice 'p4ssword'
+      users:
+        - "alice:$apr1$dCv...redacted..."
+        - "bob:$apr1$Hke...redacted..."
+```
+
+### YAML — `secretRef` to an htpasswd file
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: basic-auth-htpasswd
+  namespace: agentgateway-system
+type: Opaque
+stringData:
+  htpasswd: |
+    alice:$apr1$dCv...redacted...
+    bob:$apr1$Hke...redacted...
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: basic-auth
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: my-route
+  traffic:
+    basicAuthentication:
       mode: Strict
       realm: agentgateway
-      # Generate with: htpasswd -nbB alice 'p4ssword'
-      htpasswdContent: |
-        alice:$2y$05$dCv...redacted...
-        bob:$2y$05$Hke...redacted...
+      secretRef:
+        name: basic-auth-htpasswd
 ```
 
 > **Docs:** [Basic Auth](https://docs.solo.io/agentgateway/2.2.x/security/extauth/basic/)
@@ -237,7 +261,7 @@ sequenceDiagram
     participant GW as Agent Gateway
     participant Backend
     Client->>GW: Request + Authorization: Basic base64(user:pass)
-    GW->>GW: Decode + verify against htpasswd (APR1 / bcrypt)
+    GW->>GW: Decode + verify against APR1-hashed credentials
     alt credentials valid
         GW->>Backend: Forward request
         Backend-->>GW: Response
@@ -279,7 +303,7 @@ spec:
         kind: Service
         name: my-auth-service
         port: 80
-      failureMode: FailClosed   # FailClosed | FailOpen | DenyWithStatus
+      failureMode: FailClosed   # FailClosed | FailOpen
       http:
         path: "/check"          # path on your auth service
         allowedResponseHeaders:
@@ -333,7 +357,13 @@ sequenceDiagram
 
 The client obtains a JWT from an external OIDC provider (e.g., via Authorization Code Flow) and presents it as a bearer token. The gateway validates the JWT signature against the provider's JWKS endpoint, plus issuer and audience claims. The gateway does **not** participate in the OIDC redirect flow itself — it only validates tokens.
 
-> For *gateway-initiated* Authorization Code Flow, see [Gateway-Mediated OIDC + Token Exchange](#gateway-mediated-oidc--token-exchange-enterprise) (Enterprise).
+**Three ways to handle the OIDC redirect**, mapped to the three patterns in this guide:
+
+| Who runs the OIDC redirect | Tier | Pattern |
+|---|---|---|
+| The CLIENT (browser app, CLI with PKCE, MCP client) | OSS | **This pattern** — gateway just validates the JWT the client brings |
+| YOUR ext-auth service (custom or off-the-shelf) | OSS | [BYO External Auth](#byo-external-auth-grpc-ext_authz-oss) — gateway delegates via `extAuth` |
+| The Enterprise ext-auth service (built-in OIDC + token exchange) | Enterprise | [Gateway-Mediated OIDC + Token Exchange](#gateway-mediated-oidc--token-exchange-enterprise) |
 
 **Modes:** `Strict` (require valid JWT), `Optional` (validate if present), `Permissive` (never reject).
 
@@ -434,14 +464,14 @@ sequenceDiagram
 
 ---
 
-## Mutual TLS (mTLS) `[OSS]`
+## FrontendTLS (mTLS) + BackendTLS `[OSS]`
 
 > **When to use:** Service-to-service traffic in a zero-trust network, or when you want a credential bound to a workload identity (cert) rather than a user. Combine `FrontendTLS` + `BackendTLS` for end-to-end encryption.
 
-Two independent TLS features:
+Two independent TLS features that often get bundled in conversation but configure separately:
 
-- **FrontendTLS (inbound mTLS):** clients present an X.509 cert at the TLS handshake; the gateway validates it against `caCertificateRefs`. Modes: `Strict` (default — reject invalid/missing certs) or `AllowInsecureFallback`.
-- **BackendTLS (outbound TLS origination):** the gateway opens a TLS connection to the backend. Configured either as a standalone Gateway-API `BackendTLSPolicy` or inline via `backend.tls` on a policy.
+- **FrontendTLS (inbound mTLS):** clients present an X.509 cert at the TLS handshake; the gateway validates it against `caCertificateRefs`. Modes: `Strict` (default — reject invalid/missing certs) or `AllowInsecureFallback`. This is the *mutual* half.
+- **BackendTLS (outbound TLS origination):** the gateway opens a TLS connection to the backend and verifies the backend's server cert. By default this is **one-way TLS** — the gateway doesn't present its own client cert unless you configure that separately. Configured either as a standalone Gateway-API `BackendTLSPolicy` or inline via `backend.tls` on a policy.
 
 ### YAML — Inbound mTLS (Gateway resource)
 
@@ -504,8 +534,8 @@ spec:
       name: secured-upstream
   backend:
     tls:
-      verification: Strict          # Strict | InsecureHost | InsecureAll
       hostname: api.upstream.example.com
+      # insecureSkipVerify: All | Hostname  (omit for full verification)
       # Or use system roots: wellKnownCACertificates: System
 ```
 
@@ -546,6 +576,13 @@ OAuth normally assumes a human admin pre-registers each client application in th
 **Where real DCR works.** Keycloak and other spec-compliant IdPs that expose an unauthenticated registration endpoint. See the YAML below.
 
 **Where it doesn't.** Auth0 and Okta technically support DCR, but only via their **management APIs** — admin-token-gated, rate-limited, and creating a fresh app in the IdP dashboard per call. Workable for a couple of test clients; untenable for a developer fleet running Claude Code + Cursor + VS Code + in-house agents.
+
+**Enterprise honesty.** As Christian Posta argues in [Understanding MCP Authorization With Dynamic Client Registration](https://blog.christianposta.com/understanding-mcp-authorization-with-dynamic-client-registration/), the MCP spec assumes *anonymous* client registration, which "opens up challenges around monitoring, auditing, and revocation." Enterprise security teams typically reject anonymous trust. So while DCR is the right answer for hobbyist Keycloak setups and the open ecosystem, enterprises usually need the [Fake DCR](#mcp-oauth--fake-dcr-for-auth0--okta-enterprise) variant where the gateway substitutes one pre-vetted IdP application that every MCP client uses.
+
+**Real-world gotchas (per Posta):**
+
+- **Keycloak CORS:** Keycloak doesn't enable CORS by default on its metadata endpoints, so MCP Inspector and other browser clients can't fetch them directly — a reverse proxy is required.
+- **Scope overreach:** Some MCP clients (notably `mcp-inspector` historically) pass *all* server scopes to the registration endpoint, violating least-privilege. Verify your client doesn't do this.
 
 **The "fake DCR" workaround.** The gateway pretends to be the IdP for the registration step: `registration_endpoint` in the authorization-server metadata resolves to the gateway, and `/oauth-issuer/register` returns a single **pre-registered** IdP `client_id`/`client_secret` that every MCP client receives. Per-client revocation goes away — there's one IdP application backing the whole fleet — but **per-user identity is preserved**: each user still completes the IdP's authorization-code flow themselves, and the IdP-issued JWT is what the MCP backend validates. See [MCP OAuth — Fake DCR for Auth0 / Okta](#mcp-oauth--fake-dcr-for-auth0--okta-enterprise).
 
@@ -637,9 +674,18 @@ sequenceDiagram
 
 ## MCP OAuth — Fake DCR for Auth0 / Okta `[Enterprise]`
 
-> **When to use:** You're exposing MCP servers and your IdP is **Auth0, Okta, or another IdP that gates DCR behind a management API**. Real DCR doesn't scale to a fleet of MCP clients (Claude Code, Cursor, VS Code, in-house agents) on these IdPs. For Keycloak and other open-DCR IdPs, use [MCP OAuth + DCR](#mcp-oauth-with-dynamic-client-registration-oss) instead.
+> **When to use:** You're exposing MCP servers and your IdP is **Auth0, Okta, Microsoft Entra, or another IdP that gates DCR behind a management API**. Real DCR doesn't scale to a fleet of MCP clients (Claude Code, Cursor, VS Code, in-house agents) on these IdPs. For Keycloak and other open-DCR IdPs, use [MCP OAuth + DCR](#mcp-oauth-with-dynamic-client-registration-oss) instead.
+
+Christian Posta sets the bar for this pattern in [Enterprise MCP SSO With Microsoft Entra and Agentgateway](https://blog.christianposta.com/enterprise-mcp-sso-with-microsoft-entra-and-agentgateway/): *"Any internal enterprise MCP client / AI agent that communicates to a [remote] MCP server should be secured with enterprise SSO."* The catch is that MCP clients — VS Code, Cursor, Claude — aren't browser applications, and the official MCP OAuth spec assumes browser-based interaction. This pattern bridges the gap.
 
 The gateway hosts its own OAuth Authorization Server at `/oauth-issuer/`. From an MCP client's perspective there is exactly one OAuth issuer: the gateway. `/oauth-issuer/register` returns a **single pre-registered** IdP `client_id`/`client_secret` to every MCP client — no IdP-dashboard churn, no Management-API DCR. The gateway then brokers the authorization code flow to the IdP, and the IdP-issued JWT is validated at the MCP backend.
+
+**One-time setup** (per Posta's Entra walkthrough — adapt to your IdP):
+
+1. Create an IdP application (Entra App Registration, Auth0 Application, Okta App) representing the agentgateway.
+2. Expose an API scope (e.g., `mcp_access`).
+3. Pre-consent known clients. VS Code's baked-in MCP client ID is `aebc6443-996d-45c2-90f0-388ff96faa56` — useful for pre-consenting.
+4. Configure custom clients via additional IdP applications with proper redirect URIs.
 
 > **Eager vs lazy:** "Eager" here means the OAuth flow runs **at MCP connect time** — when the client first establishes the MCP session — not lazily on each tool call. Once the session is up, every tool call inside it reuses the same JWT. Contrast with the lazy patterns [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) and [Elicitation](#elicitation-enterprise), where the user is prompted on demand. See [Background: DCR and MCP](#background-dynamic-client-registration-and-mcp) for what DCR is and why fake DCR exists.
 
@@ -1021,6 +1067,8 @@ What changed and why:
 
 The agent exchanges the user's JWT for a delegated OBO token via RFC 8693. The user's JWT must include a `may_act` claim authorizing the agent. The STS validates the user JWT **and** the agent's Kubernetes service-account token, then issues a new JWT (signed by agentgateway) containing both `sub` (user) and `act` (agent). Downstream services trust the agentgateway issuer and can enforce policies on either identity.
 
+> **Why both identities matter.** Christian Posta makes the case in [Explaining OAuth Delegation, 'On Behalf Of', and Agent Identity for AI Agents](https://blog.christianposta.com/explaining-on-behalf-of-for-ai-agents/): *"OAuth-style flows already solve delegation. What OAuth never considered was autonomy and non-deterministic applications making decisions."* Agents don't propagate user intent the way a traditional client does — they CREATE intent. Without a separate `act` identifier, the audit log can't tell agent action from direct user action, and you can't revoke 'just this agent' without revoking the user. Multi-hop agent chains preserve full causality via nested actor claims: 'agent A called agent B which is why agent B is calling API foo' becomes traceable. RFC 8693 supports this natively; Microsoft Entra exposes the same concept via `xms_act_fct`.
+
 ### YAML — Enterprise (delegation, agent SA mounted)
 
 ```yaml
@@ -1177,6 +1225,18 @@ What's distinctive vs. Gateway-Mediated OIDC (Variant A):
 
 Same as Delegation, but **without** an actor token. The STS validates the user JWT and issues a new JWT (signed by agentgateway) with the same `sub` and scopes — no `act` claim. Original IdP token is replaced.
 
+> **The `sub` stays the same on purpose** — downstream services still need to know who the user is, so authorization policy keyed on `sub` keeps working. What changes is everything *around* `sub`:
+>
+> | Field | IdP token | Exchanged token | Why it matters |
+> |---|---|---|---|
+> | `iss` | external IdP | gateway STS | Agents only trust one issuer; IdP becomes invisible |
+> | `aud` | gateway client_id | the specific backend | Token can't be replayed against the IdP or other resources |
+> | `exp` | hours | minutes | Smaller blast radius if it leaks |
+> | `scope` | full IdP scopes | only what the agent needs | Reduces what an attacker can do with a stolen token |
+> | signature | IdP private key | gateway STS key | Agent verifies against gateway JWKS, not the IdP |
+>
+> One nuance worth flagging — see Posta's [Explaining OAuth Delegation for AI Agents](https://blog.christianposta.com/explaining-on-behalf-of-for-ai-agents/): pure Impersonation hides important information about WHO decided to act. Downstream services lose the ability to tell agent action from direct user action. For multi-agent systems or anything with compliance scrutiny, [OBO Delegation](#obo-delegation-dual-identity-enterprise) is the safer default.
+
 ### YAML — Enterprise (impersonation)
 
 ```yaml
@@ -1237,7 +1297,14 @@ sequenceDiagram
 
 > **When to use:** Your agent calls a third-party API (GitHub, Atlassian, Salesforce) on behalf of the user, and that API requires its own OAuth consent — separate from your gateway's IdP. The user authenticates twice: once for the gateway, once for the upstream API.
 
-Two sequential user-facing OAuth flows orchestrated by the gateway. First, the user authenticates via OIDC (downstream). Then, when the gateway needs to call an upstream API, it triggers an [elicitation](#elicitation-enterprise) — the user completes a second OAuth flow (upstream) via the **Solo Enterprise UI**. The STS stores the upstream token, and subsequent requests are forwarded with both the downstream JWT and the injected upstream token.
+Two sequential user-facing OAuth flows orchestrated by the gateway:
+
+1. **Inbound** — user authenticates against the corporate IdP via OIDC (the gateway runs the redirect via `entExtAuth`).
+2. **Outbound** — when the gateway needs to call a third-party API, it triggers an [elicitation](#elicitation-enterprise). The user completes a second OAuth flow at the third-party (GitHub, Atlassian, etc.) via the **Solo Enterprise UI**. The STS stores the upstream token; subsequent requests reuse it.
+
+> **Terminology note:** The Solo docs use "downstream" (inbound, corporate SSO) and "upstream" (outbound, third-party). It's a common point of confusion — both flows are user-facing, but they happen at opposite ends of the gateway. The YAML below uses the docs' terminology, but think of them as inbound (user → gateway) and outbound (gateway → third-party).
+
+> **Where this fits in Posta's framework.** In [MCP Authorization Patterns for Upstream API Calls](https://blog.christianposta.com/mcp-authorization-patterns-upstream-api-calls/), Christian Posta calls out five patterns for upstream API access. The pattern combining inbound OIDC at the gateway plus *lazy* outbound OAuth-via-elicitation is his recommended approach for organizations that want the agent flow to "just work" today — credentials never leak to MCP clients or servers, and the gateway is positioned to adopt emerging token-exchange standards.
 
 ### YAML — Enterprise (downstream OIDC + upstream elicitation)
 
@@ -1271,7 +1338,8 @@ spec:
         port: 8083
   backend:
     tokenExchange:              # 2) upstream OAuth via elicitation
-      mode: Unspecified         # Unspecified = elicit + exchange
+      # Elicitation is triggered by the presence of elicitation.secretName.
+      # Valid mode values are ExchangeOnly and ElicitationOnly.
       elicitation:
         clientName: github
         secretName: github-oauth-app
@@ -1310,7 +1378,11 @@ sequenceDiagram
 
 > **Available:** GA from Solo Enterprise for agentgateway **2.3.x**. The canonical reference deployment is [`solo-io/mk-k8s-demos/mcp-auth`](https://github.com/solo-io/mk-k8s-demos/tree/main/mcp-auth) (Helmfile + Helm chart). Earlier prototype shapes live at [`solo-io/agentgateway-eager-oauth`](https://github.com/solo-io/agentgateway-eager-oauth).
 
-> **When to use:** You expose multiple MCP servers backed by different third-party providers (GitHub, GitLab, Atlassian, Databricks…) and you want users to **sign in once via enterprise SSO** and immediately have access to every one of them — with no Solo-UI elicitation prompts and no per-provider OAuth juggling.
+> **When to use:** You expose multiple MCP servers backed by different third-party providers (GitHub, GitLab, Atlassian, Databricks…) and you want users to sign in to enterprise SSO **once** plus complete a **one-time consent at each upstream provider** — and then have no further OAuth prompts for the lifetime of those stored tokens.
+
+> **Honesty about the user experience.** The Solo marketing line is "sign in once and access everything." That's accurate for the **corporate SSO** half — login at the IdP happens once and is reused. But for each **upstream provider** (GitHub, GitLab, Atlassian, Databricks), a brand-new user still has to click through that provider's consent screen the first time. With four upstream backends, a first-time user sees four consent pop-ups in sequence at MCP-connect time. After that one-time gauntlet, the gateway persists the tokens and future sessions skip the pop-ups entirely.
+
+> **Why this pattern exists, per Posta.** In [Connecting SaaS MCP Servers to Enterprise With Agentgateway](https://blog.christianposta.com/connecting-saas-mcp-servers-to-enterprise-with-agentgateway/), Christian Posta puts it bluntly: *"SSO gives you user identity. What you need is user authorization: OAuth access tokens scoped to specific SaaS APIs on behalf of a specific user."* Federated SSO alone is not enough — most SaaS providers want their own OAuth tokens, not just identity assertions from your IdP. Provider reality check: GitHub uses standard OAuth, Atlassian's Remote MCP requires federated credentials, Databricks offers some SSO-to-OAuth mapping, and "most other providers don't support it at all."
 
 The gateway hosts its **own OAuth Authorization Server** at `/oauth-issuer/`. From an MCP client's perspective there is exactly one OAuth issuer: the gateway. Behind the scenes the gateway:
 
@@ -1318,7 +1390,7 @@ The gateway hosts its **own OAuth Authorization Server** at `/oauth-issuer/`. Fr
 2. **Pre-stages** upstream OAuth credentials for each MCP backend at config time (static OAuth app for GitHub, Dynamic Client Registration for GitLab and Atlassian).
 3. Eagerly exchanges the downstream token into per-provider upstream tokens via `/oauth-issuer/callback/upstream`.
 4. Persists upstream tokens in **PostgreSQL** so they survive restarts and are reused across requests.
-5. Each MCP backend names the upstream secret it should use via `backend.tokenExchange.oidc.secretName`.
+5. Each MCP backend names the upstream secret it should use via `backend.tokenExchange.elicitation.secretName`.
 
 > **What does "Eager" mean here?** The OAuth flow with each upstream provider runs **at MCP connect time** — when the client first establishes the MCP session — not lazily on the first tool call that needs the token. Once the session is up, every tool call inside it reuses the cached upstream tokens without further user interaction. Contrast with the lazy patterns [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) and [Elicitation](#elicitation-enterprise), where the user is prompted on demand whenever a request needs a fresh upstream token.
 
@@ -1543,6 +1615,13 @@ Patterns for authenticating the gateway → backend hop.
 
 Inbound auth (JWT or API key) validates the client and may strip the `Authorization` header. **Passthrough** re-attaches the validated token to the outbound request so the backend receives it as-is.
 
+> **Anti-pattern warning for MCP / agent contexts.** Christian Posta flags this in [MCP Authorization Patterns for Upstream API Calls](https://blog.christianposta.com/mcp-authorization-patterns-upstream-api-calls/): the MCP spec explicitly calls token passthrough *"an anti-pattern where an MCP server accepts tokens from an MCP client without validating proper issuance."* The risk: if the backend doesn't independently validate the token (issuer, audience, signature), an attacker can replay a token from one service to another within the same trust domain.
+>
+> **Safe-use checklist for Passthrough:**
+> 1. Backend and gateway share the same IdP / identity federation.
+> 2. Backend independently validates `iss`, `aud`, `exp`, signature — not just "is there an Authorization header."
+> 3. Tokens are short-lived (minutes, not hours).
+
 ### YAML — OSS
 
 ```yaml
@@ -1588,6 +1667,8 @@ sequenceDiagram
 > **When to use:** The backend (e.g., OpenAI, Anthropic) accepts a single API key and you want the gateway to attach it to every outbound request. The user's identity is established at the gateway via a separate inbound auth policy.
 
 Inbound auth validates the user. A separate `backend.auth.secretRef` policy injects a static credential into the outbound `Authorization` header. **All users share the same upstream token.** For per-user upstream tokens see [Claim-Based Token Mapping](#claim-based-token-mapping-oss) or [Elicitation](#elicitation-enterprise).
+
+> **Security framing.** Christian Posta's [API Keys Are a Bad Idea for Enterprise LLM, Agent, and MCP Access](https://blog.christianposta.com/api-keys-are-a-bad-idea-for-enterprise-llm-agent-and-mcp-access/) recommends "AI Gateway Architecture" as the pragmatic way to handle broad-permission upstream keys: *"contain provider API keys in a single gateway that shields internal systems. Internal services use stronger authentication methods while the gateway handles upstream credentials."* This pattern is exactly that — the gateway holds the shared credential, agents and users never see it, and the gateway becomes the centralized control point for rotation, audit, and rate limiting.
 
 ### YAML — OSS (real shape from a live cluster)
 
@@ -1721,6 +1802,10 @@ sequenceDiagram
 
 When a request needs an upstream OAuth token but none is available yet, the gateway returns the **elicitation URL** to the client with a `PENDING` status. The user opens that URL in the **Solo Enterprise UI** to complete the upstream OAuth flow. Once `COMPLETED`, the client retries the original request and the gateway injects the stored token.
 
+> **Posta's Pattern 4 — URL Elicitation.** Christian Posta's [MCP Authorization Patterns for Upstream API Calls](https://blog.christianposta.com/mcp-authorization-patterns-upstream-api-calls/) calls this his Pattern 4 and one of the right answers for organizations starting today: it works, it keeps credentials away from MCP clients, and a recent MCP spec proposal formalizes the elicitation flow. Trade-off he flags: it "depends on user experience design and requires all agents in a chain to support it" — multi-hop agent setups need every hop to be elicitation-aware.
+
+> **Async-flow story.** When an autonomous agent runs without a user actively present, the elicitation flow can be delivered out-of-band — the gateway produces the elicitation URL and the user completes consent later via Slack, Teams, or email. The agent retries when the token arrives. That's the key difference between Elicitation and a synchronous OAuth redirect: it doesn't require the user to be on the call at the moment of consent.
+
 > **Why Enterprise:** Requires the Solo Enterprise UI to host the consent flow and the Enterprise control plane to durably store per-user upstream tokens. The `tokenExchange.elicitation` field is in the Enterprise proto only.
 
 ### YAML — Enterprise (elicit-only mode)
@@ -1748,7 +1833,7 @@ spec:
       name: jira-mcp
   backend:
     tokenExchange:
-      mode: ElicitOnly         # do not exchange, only gather upstream creds
+      mode: ElicitationOnly    # do not exchange, only gather upstream creds
       elicitation:
         clientName: jira
         secretName: jira-oauth-app
