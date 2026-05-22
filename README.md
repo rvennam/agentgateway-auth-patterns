@@ -565,7 +565,7 @@ sequenceDiagram
 
 > **When to use:** You're exposing MCP servers and your clients (Claude Code, VS Code extensions, in-house agents) need to onboard automatically without an admin pre-registering OAuth credentials.
 
-The gateway exposes the MCP server's OAuth metadata at `.well-known/oauth-protected-resource/<path>` and `.well-known/oauth-authorization-server/<path>`, validates inbound bearer tokens, and brokers Dynamic Client Registration (RFC 7591) at the configured IdP. Built-in adapters cover spec-compliant providers and Keycloak (non-spec — needs metadata adaptation). An Auth0 adapter exists but only injects the `audience` query parameter — see the Auth0 / Okta caveat below.
+The gateway exposes the MCP server's OAuth metadata at `.well-known/oauth-protected-resource/<path>` and `.well-known/oauth-authorization-server/<path>`, validates inbound bearer tokens, and brokers Dynamic Client Registration (RFC 7591) at the configured IdP. **Built-in adapters:** `keycloak`, `auth0`, `okta` (added in [PR #1831](https://github.com/agentgateway/agentgateway/pull/1831) — same shape as Auth0: audience injection + JWKS at `.well-known/jwks.json` + CORS-proxied DCR endpoint), or omit `provider` for spec-compliant IdPs. See the Auth0 / Okta caveat below for what these adapters do (and don't) solve.
 
 ### Background: Dynamic Client Registration and MCP
 
@@ -575,7 +575,9 @@ OAuth normally assumes a human admin pre-registers each client application in th
 
 **Where real DCR works.** Keycloak and other spec-compliant IdPs that expose an unauthenticated registration endpoint. See the YAML below.
 
-**Where it doesn't.** Auth0 and Okta technically support DCR, but only via their **management APIs** — admin-token-gated, rate-limited, and creating a fresh app in the IdP dashboard per call. Workable for a couple of test clients; untenable for a developer fleet running Claude Code + Cursor + VS Code + in-house agents.
+**Where the OSS adapters help.** Auth0 and Okta now have first-class OSS adapters (`provider: { auth0: {} }` and `provider: { okta: {} }`). They handle the protocol-level integration smoothly — audience injection on the authorize endpoint, CORS-proxied DCR endpoint, JWKS at `.well-known/jwks.json`, OIDC discovery URL for metadata (Okta doesn't support RFC 8414 path-based issuer format).
+
+**Where they DON'T help.** Auth0 and Okta still gate DCR behind their **management APIs / Initial Access Tokens** — admin-token-gated, rate-limited, and creating a fresh app in the IdP dashboard per call. The OSS adapters make the protocol bits work; they don't change the underlying Auth0/Okta DCR economics. Fine for test deployments and small fleets; untenable for a developer fleet running Claude Code + Cursor + VS Code + in-house agents.
 
 **Enterprise honesty.** As Christian Posta argues in [Understanding MCP Authorization With Dynamic Client Registration](https://blog.christianposta.com/understanding-mcp-authorization-with-dynamic-client-registration/), the MCP spec assumes *anonymous* client registration, which "opens up challenges around monitoring, auditing, and revocation." Enterprise security teams typically reject anonymous trust. So while DCR is the right answer for hobbyist Keycloak setups and the open ecosystem, enterprises usually need the [Fake DCR](#mcp-oauth--fake-dcr-for-auth0--okta-enterprise) variant where the gateway substitutes one pre-vetted IdP application that every MCP client uses.
 
@@ -588,7 +590,7 @@ OAuth normally assumes a human admin pre-registers each client application in th
 
 > **OSS vs. Enterprise:** The MCP authentication broker is in OSS (validated against the OSS proto and `examples/mcp-authentication/config.yaml`). DCR support comes from the IdP — agentgateway just brokers the OAuth metadata and validates JWTs. The Solo Enterprise UI is **not required**, but if you also want a managed admin UI for MCP server registration and a single per-cluster OAuth experience, that is part of Solo Enterprise.
 
-> **Auth0 / Okta caveat:** The OSS Auth0 adapter (`provider: { auth0: {} }`) only prepends Auth0's required `audience` query parameter to the authorization endpoint. It does **not** rewrite `registration_endpoint` or substitute pre-registered credentials — DCR still hits Auth0 directly. In practice that fails for MCP at scale: Auth0's DCR is gated behind the Management API, rate-limited, and creates a new application per MCP client. The same constraint applies to Okta. If your IdP doesn't have an open DCR endpoint like Keycloak's, use [MCP OAuth — Fake DCR for Auth0 / Okta](#mcp-oauth--fake-dcr-for-auth0--okta-enterprise) — the gateway hosts its own OAuth AS and substitutes pre-registered credentials at `/oauth-issuer/register`.
+> **Auth0 / Okta caveat:** The OSS `provider: { auth0: {} }` and `provider: { okta: {} }` adapters handle the protocol mismatch — audience injection, CORS-proxied registration endpoint, JWKS path, OIDC-discovery-style metadata. They do **not** change the fact that Auth0's and Okta's DCR endpoints are gated behind their Management APIs / Initial Access Tokens, rate-limited, and create a new application per MCP client. So the adapters work fine for test/lab deployments and small fleets, but not for production developer fleets running Claude Code + Cursor + VS Code. For those, use [MCP OAuth — Fake DCR for Auth0 / Okta](#mcp-oauth--fake-dcr-for-auth0--okta-enterprise) — the gateway hosts its own OAuth AS and substitutes pre-registered credentials at `/oauth-issuer/register`.
 
 ### YAML — OSS (Keycloak with metadata adapter)
 
