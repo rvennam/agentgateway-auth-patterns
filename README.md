@@ -31,7 +31,7 @@ A practical guide to the authentication patterns supported by agentgateway. Each
   - [Standard OIDC / JWT Authentication](#standard-oidc--jwt-authentication-oss) — [OSS]
   - [Mutual TLS (mTLS)](#mutual-tls-mtls-oss) — [OSS]
   - [MCP OAuth with Dynamic Client Registration](#mcp-oauth-with-dynamic-client-registration-oss) — [OSS]
-  - [MCP OAuth — Fake DCR for Auth0 / Okta](#mcp-oauth--fake-dcr-for-auth0--okta-enterprise) — [Enterprise]
+  - [MCP OAuth — Gateway-Brokered DCR for Auth0 / Okta](#mcp-oauth--gateway-brokered-dcr-for-auth0--okta-enterprise) — [Enterprise]
 - [Token Exchange](#token-exchange)
   - [Gateway-Mediated OIDC + Token Exchange](#gateway-mediated-oidc--token-exchange-enterprise) — [Enterprise]
   - [OBO Delegation (Dual Identity)](#obo-delegation-dual-identity-enterprise) — [Enterprise]
@@ -61,7 +61,7 @@ flowchart LR
   AGW -->|outbound| LLM[LLMs] & MCP[MCP Servers] & UP[Agents / APIs]
 ```
 
-### New clients, no way to register them — real DCR vs. fake DCR
+### New clients, no way to register them — real DCR vs. gateway-brokered DCR
 
 AI clients (Claude Code, Cursor, VS Code) are each their own OAuth client, and the IdPs most enterprises run (Okta, Entra) don't allow open Dynamic Client Registration. Two ways to bridge that:
 
@@ -74,16 +74,16 @@ flowchart LR
   AS -->|"own JWT (iss: AS)"| MCP[MCP Servers]
 ```
 
-**Let agentgateway fake DCR** — one shared client ID, IdP token passed through, no per-client revocation, but nothing to build:
+**Let agentgateway broker DCR** — one shared client ID, IdP token passed through, no per-client revocation, but nothing to build:
 
 ```mermaid
 flowchart LR
-  C1[Claude Code] & C2[Cursor] & C3[VS Code] -->|"/register -> ONE shared client_id"| AGW["AgentGateway<br/>(fake DCR)"]
+  C1[Claude Code] & C2[Cursor] & C3[VS Code] -->|"/register -> ONE shared client_id"| AGW["AgentGateway<br/>(gateway-brokered DCR)"]
   AGW <-->|"broker login (per-user)"| IDP{{No-DCR IdP<br/>Okta / Entra}}
   AGW -->|"IdP JWT (passthrough)"| MCP[MCP Servers]
 ```
 
-Either way the **registration** is what's shared/faked — every user still logs in at the IdP as themselves, so per-user identity is preserved.
+Either way, only the **registration** is shared — every user still logs in at the IdP as themselves, so per-user identity is preserved.
 
 ### Agents act on your behalf — token exchange (RFC 8693)
 
@@ -107,7 +107,7 @@ flowchart LR
   C1[Claude Code]
   C2[Cursor]
   C3[VS Code]
-  C1 & C2 & C3 -->|MCP| AGW["AgentGateway<br/>(OAuth issuer · fake-DCR)"]
+  C1 & C2 & C3 -->|MCP| AGW["AgentGateway<br/>(OAuth issuer · gateway-brokered DCR)"]
 
   ENTRA <-->|"inbound login<br/>one IdP for all clients"| AGW
 
@@ -134,7 +134,7 @@ Pick the **first** pattern that matches your scenario:
 | Authenticate clients with X.509 certificates (no app-layer credentials) | [Mutual TLS](#mutual-tls-mtls-oss) | OSS |
 | Plug in a custom auth service (existing IAM, MFA, fraud checks) | [BYO External Auth](#byo-external-auth-grpc-ext_authz-oss) | OSS |
 | Onboard MCP clients (Claude Code, VS Code) to Keycloak or another IdP that supports open DCR | [MCP OAuth + DCR](#mcp-oauth-with-dynamic-client-registration-oss) | OSS |
-| Onboard MCP clients to Auth0 or Okta (DCR is gated behind their management APIs) | [MCP OAuth — Fake DCR](#mcp-oauth--fake-dcr-for-auth0--okta-enterprise) | Enterprise |
+| Onboard MCP clients to Auth0 or Okta (DCR is gated behind their management APIs) | [MCP OAuth — Gateway-Brokered DCR](#mcp-oauth--gateway-brokered-dcr-for-auth0--okta-enterprise) | Enterprise |
 | Replace the IdP token with a gateway-issued token before reaching agents | [Gateway-Mediated OIDC + Token Exchange](#gateway-mediated-oidc--token-exchange-enterprise) | Enterprise |
 | Carry **both** user and agent identity to downstream services | [OBO Delegation](#obo-delegation-dual-identity-enterprise) | Enterprise |
 | Carry the user's identity only, replacing the IdP token | [OBO Impersonation](#obo-impersonation-token-swap-enterprise) | Enterprise |
@@ -157,7 +157,7 @@ Pick the **first** pattern that matches your scenario:
 | Standard OIDC / JWT | OSS | Inbound | JWT claims (`sub`, `email`, …) | End-user APIs behind an IdP |
 | Mutual TLS | OSS | Inbound + outbound | Client cert SAN/CN | Service-to-service, zero-trust |
 | MCP OAuth + DCR | OSS | Inbound | OAuth identity | MCP clients onboarding to open-DCR IdPs (Keycloak) |
-| MCP OAuth — Fake DCR | Enterprise | Inbound | OAuth identity | MCP clients onboarding to Auth0 / Okta (admin-gated DCR) |
+| MCP OAuth — Gateway-Brokered DCR | Enterprise | Inbound | OAuth identity | MCP clients onboarding to Auth0 / Okta (admin-gated DCR) |
 | Gateway-Mediated OIDC + Token Exchange | Enterprise | Token exchange | Gateway-issued JWT (`sub` + `act`) | Decoupling agents from the IdP |
 | OBO Delegation | Enterprise | Token exchange | Gateway-issued JWT (`sub` + `act`) | Auditable user-on-behalf-of-agent |
 | OBO Impersonation | Enterprise | Token exchange | Gateway-issued JWT (`sub` only) | Hiding IdP tokens from agents |
@@ -653,18 +653,18 @@ OAuth normally assumes a human admin pre-registers each client application in th
 
 **Where they DON'T help.** Auth0 and Okta still gate DCR behind their **management APIs / Initial Access Tokens** — admin-token-gated, rate-limited, and creating a fresh app in the IdP dashboard per call. The OSS adapters make the protocol bits work; they don't change the underlying Auth0/Okta DCR economics. Fine for test deployments and small fleets; untenable for a developer fleet running Claude Code + Cursor + VS Code + in-house agents.
 
-**Enterprise honesty.** As Christian Posta argues in [Understanding MCP Authorization With Dynamic Client Registration](https://blog.christianposta.com/understanding-mcp-authorization-with-dynamic-client-registration/), the MCP spec assumes *anonymous* client registration, which "opens up challenges around monitoring, auditing, and revocation." Enterprise security teams typically reject anonymous trust. So while DCR is the right answer for hobbyist Keycloak setups and the open ecosystem, enterprises usually need the [Fake DCR](#mcp-oauth--fake-dcr-for-auth0--okta-enterprise) variant where the gateway substitutes one pre-vetted IdP application that every MCP client uses.
+**Enterprise honesty.** As Christian Posta argues in [Understanding MCP Authorization With Dynamic Client Registration](https://blog.christianposta.com/understanding-mcp-authorization-with-dynamic-client-registration/), the MCP spec assumes *anonymous* client registration, which "opens up challenges around monitoring, auditing, and revocation." Enterprise security teams typically reject anonymous trust. So while DCR is the right answer for hobbyist Keycloak setups and the open ecosystem, enterprises usually need the [Gateway-Brokered DCR](#mcp-oauth--gateway-brokered-dcr-for-auth0--okta-enterprise) variant where the gateway substitutes one pre-vetted IdP application that every MCP client uses.
 
 **Real-world gotchas (per Posta):**
 
 - **Keycloak CORS:** Keycloak doesn't enable CORS by default on its metadata endpoints, so MCP Inspector and other browser clients can't fetch them directly — a reverse proxy is required.
 - **Scope overreach:** Some MCP clients (notably `mcp-inspector` historically) pass *all* server scopes to the registration endpoint, violating least-privilege. Verify your client doesn't do this.
 
-**The "fake DCR" workaround.** The gateway pretends to be the IdP for the registration step: `registration_endpoint` in the authorization-server metadata resolves to the gateway, and `/oauth-issuer/register` returns a single **pre-registered** IdP `client_id`/`client_secret` that every MCP client receives. Per-client revocation goes away — there's one IdP application backing the whole fleet — but **per-user identity is preserved**: each user still completes the IdP's authorization-code flow themselves, and the IdP-issued JWT is what the MCP backend validates. See [MCP OAuth — Fake DCR for Auth0 / Okta](#mcp-oauth--fake-dcr-for-auth0--okta-enterprise).
+**Gateway-brokered DCR.** The gateway stands in as the registration endpoint the IdP doesn't offer: `registration_endpoint` in the authorization-server metadata resolves to the gateway, and `/oauth-issuer/register` returns a single **pre-registered** IdP `client_id`/`client_secret` that every MCP client receives. Per-client revocation goes away — there's one IdP application backing the whole fleet — but **per-user identity is preserved**: each user still completes the IdP's authorization-code flow themselves, and the IdP-issued JWT is what the MCP backend validates. See [MCP OAuth — Gateway-Brokered DCR for Auth0 / Okta](#mcp-oauth--gateway-brokered-dcr-for-auth0--okta-enterprise).
 
 > **OSS vs. Enterprise:** The MCP authentication broker is in OSS (validated against the OSS proto and `examples/mcp-authentication/config.yaml`). DCR support comes from the IdP — agentgateway just brokers the OAuth metadata and validates JWTs. The Solo Enterprise UI is **not required**, but if you also want a managed admin UI for MCP server registration and a single per-cluster OAuth experience, that is part of Solo Enterprise.
 
-> **Auth0 / Okta caveat:** The OSS `provider: { auth0: {} }` and `provider: { okta: {} }` adapters handle the protocol mismatch — audience injection, CORS-proxied registration endpoint, JWKS path, OIDC-discovery-style metadata. They do **not** change the fact that Auth0's and Okta's DCR endpoints are gated behind their Management APIs / Initial Access Tokens, rate-limited, and create a new application per MCP client. So the adapters work fine for test/lab deployments and small fleets, but not for production developer fleets running Claude Code + Cursor + VS Code. For those, use [MCP OAuth — Fake DCR for Auth0 / Okta](#mcp-oauth--fake-dcr-for-auth0--okta-enterprise) — the gateway hosts its own OAuth AS and substitutes pre-registered credentials at `/oauth-issuer/register`.
+> **Auth0 / Okta caveat:** The OSS `provider: { auth0: {} }` and `provider: { okta: {} }` adapters handle the protocol mismatch — audience injection, CORS-proxied registration endpoint, JWKS path, OIDC-discovery-style metadata. They do **not** change the fact that Auth0's and Okta's DCR endpoints are gated behind their Management APIs / Initial Access Tokens, rate-limited, and create a new application per MCP client. So the adapters work fine for test/lab deployments and small fleets, but not for production developer fleets running Claude Code + Cursor + VS Code. For those, use [MCP OAuth — Gateway-Brokered DCR for Auth0 / Okta](#mcp-oauth--gateway-brokered-dcr-for-auth0--okta-enterprise) — the gateway hosts its own OAuth AS and substitutes pre-registered credentials at `/oauth-issuer/register`.
 
 ### YAML — OSS (Keycloak with metadata adapter)
 
@@ -748,7 +748,7 @@ sequenceDiagram
 
 ---
 
-## MCP OAuth — Fake DCR for Auth0 / Okta `[Enterprise]`
+## MCP OAuth — Gateway-Brokered DCR for Auth0 / Okta `[Enterprise]`
 
 > **When to use:** You're exposing MCP servers and your IdP is **Auth0, Okta, Microsoft Entra, or another IdP that gates DCR behind a management API**. Real DCR doesn't scale to a fleet of MCP clients (Claude Code, Cursor, VS Code, in-house agents) on these IdPs. For Keycloak and other open-DCR IdPs, use [MCP OAuth + DCR](#mcp-oauth-with-dynamic-client-registration-oss) instead.
 
@@ -763,7 +763,7 @@ The gateway hosts its own OAuth Authorization Server at `/oauth-issuer/`. From a
 3. Pre-consent known clients. VS Code's baked-in MCP client ID is `aebc6443-996d-45c2-90f0-388ff96faa56` — useful for pre-consenting.
 4. Configure custom clients via additional IdP applications with proper redirect URIs.
 
-> **Eager vs lazy:** "Eager" here means the OAuth flow runs **at MCP connect time** — when the client first establishes the MCP session — not lazily on each tool call. Once the session is up, every tool call inside it reuses the same JWT. Contrast with the lazy patterns [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) and [Elicitation](#elicitation-enterprise), where the user is prompted on demand. See [Background: DCR and MCP](#background-dynamic-client-registration-and-mcp) for what DCR is and why fake DCR exists.
+> **Eager vs lazy:** "Eager" here means the OAuth flow runs **at MCP connect time** — when the client first establishes the MCP session — not lazily on each tool call. Once the session is up, every tool call inside it reuses the same JWT. Contrast with the lazy patterns [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) and [Elicitation](#elicitation-enterprise), where the user is prompted on demand. See [Background: DCR and MCP](#background-dynamic-client-registration-and-mcp) for what DCR is and why gateway-brokered DCR exists.
 
 > **Related:** If you also need **per-upstream-provider tokens** (each MCP backend gets its own GitHub / GitLab / Atlassian token), see [Eager Upstream OAuth](#eager-upstream-oauth-gateway-as-oauth-issuer-enterprise) — same `/oauth-issuer/` machinery, plus per-backend token exchange.
 
@@ -785,7 +785,7 @@ sequenceDiagram
     MCP->>GW: GET /.well-known/oauth-authorization-server/mcp
     GW-->>MCP: AS metadata — registration_endpoint, authorize_url, token_url<br/>all point at gateway's /oauth-issuer/*
     MCP->>GW: POST /oauth-issuer/register (RFC 7591 DCR)
-    Note over GW: Fake DCR — returns pre-registered client_id from<br/>KGW_OAUTH_ISSUER_CONFIG.client_config.clients<br/>(no call to IdP)
+    Note over GW: Gateway-Brokered DCR — returns pre-registered client_id from<br/>KGW_OAUTH_ISSUER_CONFIG.client_config.clients<br/>(no call to IdP)
     GW-->>MCP: client_id (+ client_secret)
     MCP->>GW: GET /oauth-issuer/authorize (PKCE)
     GW-->>MCP: 302 to IdP /authorize<br/>(using downstream_server.client_id/secret)
@@ -1470,7 +1470,7 @@ The gateway hosts its **own OAuth Authorization Server** at `/oauth-issuer/`. Fr
 
 > **What does "Eager" mean here?** The OAuth flow with each upstream provider runs **at MCP connect time** — when the client first establishes the MCP session — not lazily on the first tool call that needs the token. Once the session is up, every tool call inside it reuses the cached upstream tokens without further user interaction. Contrast with the lazy patterns [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) and [Elicitation](#elicitation-enterprise), where the user is prompted on demand whenever a request needs a fresh upstream token.
 
-> **Single-IdP shape?** If you don't need per-upstream-provider tokens — i.e. one IdP, JWT goes straight to the backend, and you just need fake DCR because real DCR isn't viable on your IdP — see [MCP OAuth — Fake DCR for Auth0 / Okta](#mcp-oauth--fake-dcr-for-auth0--okta-enterprise). It uses the same `/oauth-issuer/` machinery without the per-backend `backend.tokenExchange` policy or Variants 1/2 below.
+> **Single-IdP shape?** If you don't need per-upstream-provider tokens — i.e. one IdP, JWT goes straight to the backend, and you just need gateway-brokered DCR because real DCR isn't viable on your IdP — see [MCP OAuth — Gateway-Brokered DCR for Auth0 / Okta](#mcp-oauth--gateway-brokered-dcr-for-auth0--okta-enterprise). It uses the same `/oauth-issuer/` machinery without the per-backend `backend.tokenExchange` policy or Variants 1/2 below.
 
 ### How it differs from the lazy patterns
 
@@ -1964,7 +1964,7 @@ sequenceDiagram
 | **AuthConfig** | Solo Enterprise CRD (`extauth.solo.io/v1`) describing an external auth flow (OIDC, OAuth2, API key, OPA, etc.) consumed by the Enterprise external auth service. Used by `entExtAuth`. |
 | **DCR** | Dynamic Client Registration (RFC 7591). Lets OAuth clients register themselves with an authorization server at runtime instead of via human onboarding. See [Background: DCR and MCP](#background-dynamic-client-registration-and-mcp) for why MCP needs it and where it works. |
 | **Eager OAuth** | An OAuth flow that runs **at MCP connect time** — when the client first establishes the MCP session — rather than lazily on each tool call. Once the session is up, every tool call inside it reuses the cached token(s). Contrasts with [Elicitation](#elicitation-enterprise) and [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) (lazy: prompt the user when a request needs a fresh token). |
-| **Fake DCR** | A workaround for IdPs whose real DCR is impractical at scale (Auth0, Okta — DCR is gated behind their management APIs). The gateway intercepts the DCR call and returns a single pre-registered IdP `client_id`/`client_secret` to every MCP client, instead of forwarding to the IdP. See [MCP OAuth — Fake DCR for Auth0 / Okta](#mcp-oauth--fake-dcr-for-auth0--okta-enterprise). |
+| **Gateway-Brokered DCR** | A workaround for IdPs whose real DCR is impractical at scale (Auth0, Okta — DCR is gated behind their management APIs). The gateway intercepts the DCR call and returns a single pre-registered IdP `client_id`/`client_secret` to every MCP client, instead of forwarding to the IdP. See [MCP OAuth — Gateway-Brokered DCR for Auth0 / Okta](#mcp-oauth--gateway-brokered-dcr-for-auth0--okta-enterprise). |
 | **`entExtAuth`** | Enterprise field on `EnterpriseAgentgatewayPolicy.traffic` that delegates auth to the Solo Enterprise external auth service via an `AuthConfig`. |
 | **`extAuth`** | OSS field on `AgentgatewayPolicy.traffic` that delegates to a user-supplied gRPC or HTTP service via the Envoy `ext_authz` protocol. |
 | **Elicitation** | An agentgateway flow that prompts a user to complete an upstream OAuth authorization out-of-band (in the Solo UI) so the gateway can inject the resulting token on later requests. Enterprise-only. |

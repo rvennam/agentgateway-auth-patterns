@@ -14,12 +14,12 @@ In the old world there was one client — the browser or app — and you registe
 
 OAuth has an answer: **Dynamic Client Registration** (DCR, RFC 7591). A client hits a `/register` endpoint, gets its own `client_id`, and runs the normal login flow. The catch — and it's a big one — is that the IdPs most enterprises actually run (Okta, Entra, Auth0) don't expose open DCR. So you're left with two real options:
 
-![Real DCR with a custom authorization server vs. fake DCR with the gateway](img/dcr.png)
+![Real DCR with a custom authorization server vs. gateway-brokered DCR](img/dcr.png)
 
 - **Build your own authorization server** that does real DCR and brokers login to your IdP. Each client gets a unique `client_id`, so you can identify and revoke them individually. We run one of these for our own MCP servers at Solo. It works, but now you're operating an authorization server.
-- **Let the gateway fake it.** The gateway exposes the `/register` endpoint your IdP won't, hands every client a single pre-registered `client_id`, and brokers the real login upstream. Nothing to build.
+- **Let the gateway broker it.** The gateway exposes the `/register` endpoint your IdP won't, hands every client a single pre-registered `client_id`, and brokers the real login upstream. Nothing to build.
 
-"Fake DCR" sounds sketchy until you see what it actually fakes: only the *registration* step. Every user still gets redirected to the real IdP and logs in as themselves, so per-user identity is fully preserved. What you give up is per-client distinction — to the IdP, the whole fleet looks like one app. For most teams that's a fine trade to avoid standing up an auth server.
+It sounds heavier than it is: the only thing the gateway stands in for is the *registration* step. Every user still gets redirected to the real IdP and logs in as themselves, so per-user identity is fully preserved. What you give up is per-client distinction — to the IdP, the whole fleet looks like one app. For most teams that's a fine trade to avoid standing up an auth server.
 
 ## 2. The agent acts on your behalf — don't hand it your token
 
@@ -55,6 +55,6 @@ Which one fits depends on the server. A GitHub-style server with a fixed set of 
 
 None of these are exotic. They're the natural consequence of three shifts: the client became a fleet of agents, those agents act on your behalf across multiple hops, and they reach into systems that each have their own identity. Registration, token exchange, and elicitation are just the patterns that fall out of that.
 
-The reason a gateway keeps showing up is that it's the one place that sits in the path both ways. It can fake DCR in front of an IdP that won't do it, swap a broad token for a scoped one before an agent ever sees it, and gather per-user upstream credentials on demand — without baking any of that into every app and agent you run.
+The reason a gateway keeps showing up is that it's the one place that sits in the path both ways. It can broker DCR in front of an IdP that won't do it, swap a broad token for a scoped one before an agent ever sees it, and gather per-user upstream credentials on demand — without baking any of that into every app and agent you run.
 
 If you want the implementation detail — the exact flows, the config, the trade-offs per IdP — that's all in the [agentgateway docs](https://docs.solo.io/agentgateway/). But the patterns above are the part worth carrying into your next architecture conversation. Once you can name them, the rest is just wiring.

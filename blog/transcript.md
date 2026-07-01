@@ -104,7 +104,7 @@ You can send that external endpoint the method, path, headers — even the body.
 
 ---
 
-## Dynamic Client Registration (and Fake DCR)
+## Dynamic Client Registration (and Gateway-Brokered DCR)
 
 **Ram:** Getting deeper into the weeds — as much as we tried to avoid it — is **Dynamic Client Registration**.
 
@@ -114,9 +114,9 @@ There's a new OAuth spec for letting these clients register in your IdP so the I
 
 This is great in theory, but most of the common IdPs — Entra, for example — don't support dynamic client registration. So each client can't automatically register itself just by calling an endpoint. If you want that functionality, where each client is a unique OAuth client, you need to **build your own custom authorization server**. We have one of these for all the MCP servers at Solo — `auth-mcp.solo.io` — where you can log in and see all your registered MCP clients. When a client registers, each one gets its own client ID, so we can uniquely identify it. Once the user logs into the IdP, the authorization server brokers the login and keeps a map of its own issued token to the IdP token. That's the registration path; the normal data path is where you show up with the JWT and agentgateway enforces it to the MCP.
 
-![Real DCR with a custom authorization server vs. Fake DCR with agentgateway](img/dcr.png)
+![Real DCR with a custom authorization server vs. Gateway-Brokered DCR with agentgateway](img/dcr.png)
 
-If you *don't* want to build your own custom authorization server, but you're using an IdP that doesn't support DCR, agentgateway has a feature to do the dynamic client registration for you. agentgateway itself acts as the authorization server and provides the `/register` endpoint — that's **Fake DCR**.
+If you *don't* want to build your own custom authorization server, but you're using an IdP that doesn't support DCR, agentgateway has a feature to do the dynamic client registration for you. agentgateway itself acts as the authorization server and provides the `/register` endpoint — that's **Gateway-Brokered DCR**.
 
 The big downside: there's now only one client. When agentgateway replies to `/register`, it uses the one shared client ID it registered for itself, and hands that same client ID back to every client. This lets each client complete the DCR flow — when you register an MCP endpoint, it goes back to the user, the user logs in, so we know who the user is — but because they all share the same client ID, we can't uniquely distinguish the different clients. There's a trade-off, but for most users it's worth it: you get to use agentgateway as both your authorization server and the proxy to your MCP destinations, without building an authorization server yourself.
 
