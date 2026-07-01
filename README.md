@@ -21,6 +21,7 @@ A practical guide to the authentication patterns supported by agentgateway. Each
 
 ## Table of Contents
 
+- [Architecture at a Glance](#architecture-at-a-glance)
 - [Quick Selection Guide](#quick-selection-guide)
 - [At a Glance: All Patterns](#at-a-glance-all-patterns)
 - [Inbound Authentication](#inbound-authentication)
@@ -45,6 +46,79 @@ A practical guide to the authentication patterns supported by agentgateway. Each
   - [Elicitation](#elicitation-enterprise) — [Enterprise]
 - [Decision Flowchart](#decision-flowchart)
 - [Glossary](#glossary)
+
+---
+
+## Architecture at a Glance
+
+agentgateway brokers identity in **two directions** — *inbound* (who's calling) and *outbound* (how to reach the destination). These diagrams are the mental model; the pattern sections below give the exact config.
+
+### The two directions
+
+```mermaid
+flowchart LR
+  B[Browsers] & M[MCP Clients] & A[Agents / Apps] -->|inbound| AGW["AgentGateway"]
+  AGW -->|outbound| LLM[LLMs] & MCP[MCP Servers] & UP[Agents / APIs]
+```
+
+### New clients, no way to register them — real DCR vs. fake DCR
+
+AI clients (Claude Code, Cursor, VS Code) are each their own OAuth client, and the IdPs most enterprises run (Okta, Entra) don't allow open Dynamic Client Registration. Two ways to bridge that:
+
+**Build a custom authorization server** — real DCR, unique client IDs, per-client revocation, but you build and run it:
+
+```mermaid
+flowchart LR
+  C1[Claude Code] & C2[Cursor] & C3[VS Code] -->|"/register -> unique client_id"| AS["Custom Auth Server<br/>(e.g. auth-mcp)"]
+  AS <-->|"broker login (per-user)"| IDP{{No-DCR IdP<br/>Okta / Entra}}
+  AS -->|"own JWT (iss: AS)"| MCP[MCP Servers]
+```
+
+**Let agentgateway fake DCR** — one shared client ID, IdP token passed through, no per-client revocation, but nothing to build:
+
+```mermaid
+flowchart LR
+  C1[Claude Code] & C2[Cursor] & C3[VS Code] -->|"/register -> ONE shared client_id"| AGW["AgentGateway<br/>(fake DCR)"]
+  AGW <-->|"broker login (per-user)"| IDP{{No-DCR IdP<br/>Okta / Entra}}
+  AGW -->|"IdP JWT (passthrough)"| MCP[MCP Servers]
+```
+
+Either way the **registration** is what's shared/faked — every user still logs in at the IdP as themselves, so per-user identity is preserved.
+
+### Agents act on your behalf — token exchange (RFC 8693)
+
+Don't hand a multi-hop agent your broad IdP token. The gateway swaps it for a fresh, scoped, short-lived one before any agent sees it — **impersonation** keeps just the user (`sub`), **delegation** adds an `act` claim naming the acting agent.
+
+```mermaid
+flowchart LR
+  U[User] -->|"broad IdP JWT<br/>sub: alice - groups: eng, mcp-users, gcp-admin - exp: 1h"| AGW["AgentGateway"]
+  AGW <-->|mint scoped token| STS{{Gateway STS}}
+  AGW -->|"scoped JWT<br/>sub: alice - act: agent1 - groups: mcp-users - exp: 1m"| A1[Agent 1] --> A2[Agent 2]
+```
+
+### Agents call third-party APIs as you — elicitation
+
+One inbound login, many upstreams — each with its **own** OAuth identity domain. The gateway gathers a per-user token for each provider (eager at connect, or lazy on first use) and injects it.
+
+```mermaid
+flowchart LR
+  ENTRA{{Microsoft Entra}}
+
+  C1[Claude Code]
+  C2[Cursor]
+  C3[VS Code]
+  C1 & C2 & C3 -->|MCP| AGW["AgentGateway<br/>(OAuth issuer · fake-DCR)"]
+
+  ENTRA <-->|"inbound login<br/>one IdP for all clients"| AGW
+
+  AGW ==>|elicit| SF[Snowflake MCP]
+  AGW ==>|elicit| ATL[Atlassian MCP]
+  AGW ==>|elicit| GL[GitLab MCP]
+
+  SF <-->|"upstream OAuth"| SFIDP{{Snowflake OAuth}}
+  ATL <-->|"upstream OAuth"| ATLIDP{{Atlassian OAuth}}
+  GL <-->|"upstream OAuth"| GLIDP{{GitLab OAuth}}
+```
 
 ---
 
