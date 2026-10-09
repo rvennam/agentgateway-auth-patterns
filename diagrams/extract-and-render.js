@@ -260,6 +260,19 @@ diagrams["cors"] = `sequenceDiagram
         Note over Browser: Browser blocks the actual request
     end`;
 
+// Diagrams keyed off h3/h4 headings in the README (first mermaid block after the heading)
+for (const [slug, heading] of [
+  ["eager-oauth", "### Variant B — Chained"],
+  ["waypoint-identity", "## Mesh Identity Authorization"],
+  ["llm-egress-waypoint", "## LLM Egress with Waypoint-Injected Credentials"],
+  ["e2e-flow", "### The recommended end-to-end flow"]
+]) {
+  const idx = README.indexOf(heading);
+  if (idx < 0) { console.warn("not found:", heading); continue; }
+  const m = README.slice(idx).match(/```mermaid\n([\s\S]*?)\n```/);
+  if (m) diagrams[slug] = m[1];
+}
+
 // Variant B for Gateway-Mediated — extract second mermaid block of that section
 {
   const idx = README.indexOf("### Variant B: External STS");
@@ -280,7 +293,7 @@ for (const [slug, src] of Object.entries(diagrams)) {
   fs.writeFileSync(mmd, src);
   try {
     execSync(
-      `npx --yes --package=@mermaid-js/mermaid-cli mmdc -i "${mmd}" -o "${png}" -c "${themePath}" -p "${puppPath}" -b "#151927" -w 1600 -H 900 -s 2`,
+      `mmdc -i "${mmd}" -o "${png}" -c "${themePath}" -p "${puppPath}" -b "#151927" -w 1600 -H 900 -s 2`,
       { stdio: "pipe" }
     );
     ok++;
