@@ -33,13 +33,12 @@ A practical guide to the authentication patterns supported by agentgateway. Each
   - [Standard OIDC / JWT Authentication](#standard-oidc--jwt-authentication-oss) — [OSS]
   - [Mutual TLS (mTLS)](#frontendtls-mtls--backendtls-oss) — [OSS]
   - [MCP OAuth with Dynamic Client Registration](#mcp-oauth-with-dynamic-client-registration-oss) — [OSS]
-  - [MCP OAuth — Gateway-Brokered DCR for Auth0 / Okta](#mcp-oauth--gateway-brokered-dcr-for-auth0--okta-enterprise) — [Enterprise]
+  - [Brokered OAuth Issuer — Downstream-Only and Chained](#brokered-oauth-issuer--downstream-only-and-chained-enterprise) — [Enterprise]
 - [Token Exchange](#token-exchange)
   - [Gateway-Mediated OIDC + Token Exchange](#gateway-mediated-oidc--token-exchange-enterprise) — [Enterprise]
   - [OBO Delegation (Dual Identity)](#obo-delegation-dual-identity-enterprise) — [Enterprise]
   - [OBO Impersonation (Token Swap)](#obo-impersonation-token-swap-enterprise) — [Enterprise]
   - [Double OAuth Flow (OIDC + Elicitation)](#double-oauth-flow-oidc--elicitation-enterprise) — [Enterprise]
-  - [Eager Upstream OAuth (Gateway as OAuth Issuer)](#eager-upstream-oauth-gateway-as-oauth-issuer-enterprise) — [Enterprise]
 - [Upstream / Backend Auth](#upstream--backend-auth)
   - [Passthrough Token](#passthrough-token-oss) — [OSS]
   - [Static Secret Injection (Shared Credential)](#static-secret-injection-shared-credential-oss) — [OSS]
@@ -88,9 +87,39 @@ flowchart LR
   AGW -->|"IdP JWT (passthrough)"| MCP[MCP Servers]
 ```
 
-Either way, only the **registration** is shared — every user still logs in at the IdP as themselves, so per-user identity is preserved.
+Either way, only the **registration** is shared — every user still logs in at the IdP as themselves, so per-user identity is preserved. The second option is [Brokered OAuth Issuer — Variant A](#variant-a--downstream-only-gateway-brokered-dcr-for-auth0--okta--entra) below (Solo's docs call it *downstream-only brokered login*); when the MCP servers also need their own per-user SaaS tokens, the same issuer runs a second, chained OAuth leg — [Variant B](#variant-b--chained-per-upstream-oauth-github--gitlab--atlassian).
 
-> **See it all working together:** [rvennam/agent-mesh-demo](https://github.com/rvennam/agent-mesh-demo) runs the ingress login + token rescoping, agent delegation chains (RFC 8693 with nested `act`), per-tool MCP authorization on workload *and* user identity, LLM budgets, and prompt guards on one Solo Istio ambient mesh with agentgateway as the waypoint. The [east-west section](#east-west-agentgateway-as-an-istio-ambient-waypoint) below covers the mesh-side identity patterns.
+### The recommended end-to-end flow — login → rescope → delegate → per-tool authz
+
+If you only read one thing, read this. It is the chain we recommend for agents that act for humans, and it is proven end to end in **[rvennam/agent-mesh-demo](https://github.com/rvennam/agent-mesh-demo)** (Solo Istio ambient + agentgateway as the waypoint, Keycloak, a notebook you run cell by cell). Each hop maps to a pattern in this guide:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant Ingress as agentgateway ingress
+    participant STS as agentgateway STS (:7777)
+    participant Agent as Agent (SA: assistant)
+    participant WP as agentgateway waypoint
+    participant MCP as MCP server
+
+    User->>Ingress: open the app
+    Ingress->>User: OIDC login at the corporate IdP (ext-auth)
+    Ingress->>STS: exchange IdP token → aud: assistant, allowed claims only
+    Ingress->>Agent: request + re-scoped user token (IdP token never leaves the gateway)
+    Agent->>STS: token exchange: subject = user token, actor = agent's K8s SA token
+    STS-->>Agent: delegated token (sub = user, act.sub = assistant)
+    Agent->>WP: MCP tools/call over mTLS (SPIFFE: assistant) + delegated token
+    WP->>WP: per-tool CEL: source.identity.* ∧ jwt.sub/roles ∧ user authorized this agent
+    WP->>MCP: forward (or 403 — the MCP server never sees a refused call)
+```
+
+| Hop | Pattern | What it buys you |
+|---|---|---|
+| 1–3 | [Gateway-Mediated OIDC + Token Exchange](#gateway-mediated-oidc--token-exchange-enterprise) | The human logs in once; the agent never holds the broad IdP token, only one scoped to it. |
+| 4–5 | [OBO Delegation](#obo-delegation-dual-identity-enterprise) | The token at the tool says *this human, through this agent*; a second agent nests `act.act`. |
+| 6–7 | [Mesh Identity Authorization](#mesh-identity-authorization-spiffe-no-tokens-enterprise) | The waypoint checks the workload's mTLS identity **and** the user's claims per tool; a shadow agent with the same login gets nothing. |
+| LLM | [LLM Egress with Waypoint-Injected Credentials](#llm-egress-with-waypoint-injected-credentials-enterprise) | No provider keys in agent pods; per-agent budgets and prompt guards at the same hop. |
 
 ### Agents act on your behalf — token exchange (RFC 8693)
 
@@ -141,12 +170,12 @@ Pick the **first** pattern that matches your scenario:
 | Authenticate clients with X.509 certificates (no app-layer credentials) | [Mutual TLS](#frontendtls-mtls--backendtls-oss) | OSS |
 | Plug in a custom auth service (existing IAM, MFA, fraud checks) | [BYO External Auth](#byo-external-auth-grpc-ext_authz-oss) | OSS |
 | Onboard MCP clients (Claude Code, VS Code) to Keycloak or another IdP that supports open DCR | [MCP OAuth + DCR](#mcp-oauth-with-dynamic-client-registration-oss) | OSS |
-| Onboard MCP clients to Auth0 or Okta (DCR is gated behind their management APIs) | [MCP OAuth — Gateway-Brokered DCR](#mcp-oauth--gateway-brokered-dcr-for-auth0--okta-enterprise) | Enterprise |
+| Onboard MCP clients to Auth0 / Okta / Entra (DCR is gated behind their management APIs) | [Brokered OAuth Issuer — Variant A (downstream-only)](#variant-a--downstream-only-gateway-brokered-dcr-for-auth0--okta--entra) | Enterprise |
 | Replace the IdP token with a gateway-issued token before reaching agents | [Gateway-Mediated OIDC + Token Exchange](#gateway-mediated-oidc--token-exchange-enterprise) | Enterprise |
 | Carry **both** user and agent identity to downstream services | [OBO Delegation](#obo-delegation-dual-identity-enterprise) | Enterprise |
 | Carry the user's identity only, replacing the IdP token | [OBO Impersonation](#obo-impersonation-token-swap-enterprise) | Enterprise |
 | Have one user complete OAuth flows for two different APIs in sequence | [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) | Enterprise |
-| One SSO login → multiple upstream APIs (GitHub/GitLab/Atlassian), no Solo UI prompts | [Eager Upstream OAuth](#eager-upstream-oauth-gateway-as-oauth-issuer-enterprise) | Enterprise |
+| One SSO login → multiple upstream APIs (GitHub/GitLab/Atlassian), no Solo UI prompts | [Brokered OAuth Issuer — Variant B (chained)](#variant-b--chained-per-upstream-oauth-github--gitlab--atlassian) | Enterprise |
 | Forward the client's original `Authorization` header to the backend | [Passthrough Token](#passthrough-token-oss) | OSS |
 | Inject a single shared API key for all users into upstream calls | [Static Secret Injection](#static-secret-injection-shared-credential-oss) | OSS |
 | Inject a different upstream key per user, team, or tier | [Claim-Based Token Mapping](#claim-based-token-mapping-oss) | OSS |
@@ -166,12 +195,12 @@ Pick the **first** pattern that matches your scenario:
 | Standard OIDC / JWT | OSS | Inbound | JWT claims (`sub`, `email`, …) | End-user APIs behind an IdP |
 | Mutual TLS | OSS | Inbound + outbound | Client cert SAN/CN | Service-to-service, zero-trust |
 | MCP OAuth + DCR | OSS | Inbound | OAuth identity | MCP clients onboarding to open-DCR IdPs (Keycloak) |
-| MCP OAuth — Gateway-Brokered DCR | Enterprise | Inbound | OAuth identity | MCP clients onboarding to Auth0 / Okta (admin-gated DCR) |
+| Brokered OAuth Issuer — A: downstream-only | Enterprise | Inbound | IdP JWT (shared client registration, per-user login) | MCP clients onboarding to Auth0 / Okta / Entra (admin-gated DCR) |
 | Gateway-Mediated OIDC + Token Exchange | Enterprise | Token exchange | Gateway-issued JWT (`sub` + `act`) | Decoupling agents from the IdP |
 | OBO Delegation | Enterprise | Token exchange | Gateway-issued JWT (`sub` + `act`) | Auditable user-on-behalf-of-agent |
 | OBO Impersonation | Enterprise | Token exchange | Gateway-issued JWT (`sub` only) | Hiding IdP tokens from agents |
 | Double OAuth Flow | Enterprise | Token exchange | Downstream JWT + upstream token | Agents calling 3rd-party APIs as user |
-| Eager Upstream OAuth | Enterprise | Token exchange | Upstream provider token | Single SSO → many third-party APIs |
+| Brokered OAuth Issuer — B: chained | Enterprise | Inbound + outbound | Upstream provider token (per user) | Single SSO → many third-party APIs |
 | Passthrough Token | OSS | Outbound | Original client token | Federated identity, opaque tokens |
 | Static Secret Injection | OSS | Outbound | Shared credential | One backend key, many users |
 | Claim-Based Token Mapping | OSS | Outbound | Per-claim mapped credential | Tiered access, per-team API keys |
@@ -711,18 +740,18 @@ OAuth normally assumes a human admin pre-registers each client application in th
 
 **Where they DON'T help.** Auth0 and Okta still gate DCR behind their **management APIs / Initial Access Tokens** — admin-token-gated, rate-limited, and creating a fresh app in the IdP dashboard per call. The OSS adapters make the protocol bits work; they don't change the underlying Auth0/Okta DCR economics. Fine for test deployments and small fleets; untenable for a developer fleet running Claude Code + Cursor + VS Code + in-house agents.
 
-**Enterprise honesty.** As Christian Posta argues in [Understanding MCP Authorization With Dynamic Client Registration](https://blog.christianposta.com/understanding-mcp-authorization-with-dynamic-client-registration/), the MCP spec assumes *anonymous* client registration, which "opens up challenges around monitoring, auditing, and revocation." Enterprise security teams typically reject anonymous trust. So while DCR is the right answer for hobbyist Keycloak setups and the open ecosystem, enterprises usually need the [Gateway-Brokered DCR](#mcp-oauth--gateway-brokered-dcr-for-auth0--okta-enterprise) variant where the gateway substitutes one pre-vetted IdP application that every MCP client uses.
+**Enterprise honesty.** As Christian Posta argues in [Understanding MCP Authorization With Dynamic Client Registration](https://blog.christianposta.com/understanding-mcp-authorization-with-dynamic-client-registration/), the MCP spec assumes *anonymous* client registration, which "opens up challenges around monitoring, auditing, and revocation." Enterprise security teams typically reject anonymous trust. So while DCR is the right answer for hobbyist Keycloak setups and the open ecosystem, enterprises usually need the [downstream-only brokered issuer](#variant-a--downstream-only-gateway-brokered-dcr-for-auth0--okta--entra) variant where the gateway substitutes one pre-vetted IdP application that every MCP client uses.
 
 **Real-world gotchas (per Posta):**
 
 - **Keycloak CORS:** Keycloak doesn't enable CORS by default on its metadata endpoints, so MCP Inspector and other browser clients can't fetch them directly — a reverse proxy is required.
 - **Scope overreach:** Some MCP clients (notably `mcp-inspector` historically) pass *all* server scopes to the registration endpoint, violating least-privilege. Verify your client doesn't do this.
 
-**Gateway-brokered DCR.** The gateway stands in as the registration endpoint the IdP doesn't offer: `registration_endpoint` in the authorization-server metadata resolves to the gateway, and `/oauth-issuer/register` returns a single **pre-registered** IdP `client_id`/`client_secret` that every MCP client receives. Per-client revocation goes away — there's one IdP application backing the whole fleet — but **per-user identity is preserved**: each user still completes the IdP's authorization-code flow themselves, and the IdP-issued JWT is what the MCP backend validates. See [MCP OAuth — Gateway-Brokered DCR for Auth0 / Okta](#mcp-oauth--gateway-brokered-dcr-for-auth0--okta-enterprise).
+**Gateway-brokered DCR.** The gateway stands in as the registration endpoint the IdP doesn't offer: `registration_endpoint` in the authorization-server metadata resolves to the gateway, and `/oauth-issuer/register` returns a single **pre-registered** IdP `client_id`/`client_secret` that every MCP client receives. Per-client revocation goes away — there's one IdP application backing the whole fleet — but **per-user identity is preserved**: each user still completes the IdP's authorization-code flow themselves, and the IdP-issued JWT is what the MCP backend validates. See [Brokered OAuth Issuer — Variant A (downstream-only)](#variant-a--downstream-only-gateway-brokered-dcr-for-auth0--okta--entra).
 
 > **OSS vs. Enterprise:** The MCP authentication broker is in OSS (validated against the OSS proto and `examples/mcp-authentication/config.yaml`). DCR support comes from the IdP — agentgateway just brokers the OAuth metadata and validates JWTs. The Solo Enterprise UI is **not required**, but if you also want a managed admin UI for MCP server registration and a single per-cluster OAuth experience, that is part of Solo Enterprise.
 
-> **Auth0 / Okta caveat:** The OSS `provider: { auth0: {} }` and `provider: { okta: {} }` adapters handle the protocol mismatch — audience injection, CORS-proxied registration endpoint, JWKS path, OIDC-discovery-style metadata. They do **not** change the fact that Auth0's and Okta's DCR endpoints are gated behind their Management APIs / Initial Access Tokens, rate-limited, and create a new application per MCP client. So the adapters work fine for test/lab deployments and small fleets, but not for production developer fleets running Claude Code + Cursor + VS Code. For those, use [MCP OAuth — Gateway-Brokered DCR for Auth0 / Okta](#mcp-oauth--gateway-brokered-dcr-for-auth0--okta-enterprise) — the gateway hosts its own OAuth AS and substitutes pre-registered credentials at `/oauth-issuer/register`.
+> **Auth0 / Okta caveat:** The OSS `provider: { auth0: {} }` and `provider: { okta: {} }` adapters handle the protocol mismatch — audience injection, CORS-proxied registration endpoint, JWKS path, OIDC-discovery-style metadata. They do **not** change the fact that Auth0's and Okta's DCR endpoints are gated behind their Management APIs / Initial Access Tokens, rate-limited, and create a new application per MCP client. So the adapters work fine for test/lab deployments and small fleets, but not for production developer fleets running Claude Code + Cursor + VS Code. For those, use [Brokered OAuth Issuer — Variant A (downstream-only)](#variant-a--downstream-only-gateway-brokered-dcr-for-auth0--okta--entra) — the gateway hosts its own OAuth AS and substitutes pre-registered credentials at `/oauth-issuer/register`.
 
 ### YAML — OSS (Keycloak with metadata adapter)
 
@@ -833,72 +862,144 @@ sequenceDiagram
 
 ---
 
-## MCP OAuth — Gateway-Brokered DCR for Auth0 / Okta `[Enterprise]`
+## Brokered OAuth Issuer — Downstream-Only and Chained `[Enterprise]`
 
-> **When to use:** You're exposing MCP servers and your IdP is **Auth0, Okta, Microsoft Entra, or another IdP that gates DCR behind a management API**. Real DCR doesn't scale to a fleet of MCP clients (Claude Code, Cursor, VS Code, in-house agents) on these IdPs. For Keycloak and other open-DCR IdPs, use [MCP OAuth + DCR](#mcp-oauth-with-dynamic-client-registration-oss) instead.
+> **When to use:** You expose MCP servers to a fleet of MCP clients (Claude Code, Cursor, VS Code, in-house agents) and either (a) your IdP is **Auth0, Okta, Microsoft Entra, or another IdP that gates Dynamic Client Registration behind a management API**, so real DCR per client doesn't scale, or (b) the MCP servers sit in front of **third-party SaaS APIs** (GitHub, GitLab, Atlassian, Databricks…) that need their own per-user OAuth token. For Keycloak and other open-DCR IdPs with no upstream OAuth, [MCP OAuth + DCR](#mcp-oauth-with-dynamic-client-registration-oss) is enough.
 
-Christian Posta sets the bar for this pattern in [Enterprise MCP SSO With Microsoft Entra and Agentgateway](https://blog.christianposta.com/enterprise-mcp-sso-with-microsoft-entra-and-agentgateway/): *"Any internal enterprise MCP client / AI agent that communicates to a [remote] MCP server should be secured with enterprise SSO."* The catch is that MCP clients — VS Code, Cursor, Claude — aren't browser applications, and the official MCP OAuth spec assumes browser-based interaction. This pattern bridges the gap.
+Christian Posta sets the bar in [Enterprise MCP SSO With Microsoft Entra and Agentgateway](https://blog.christianposta.com/enterprise-mcp-sso-with-microsoft-entra-and-agentgateway/): *"Any internal enterprise MCP client / AI agent that communicates to a [remote] MCP server should be secured with enterprise SSO."* And in [Connecting SaaS MCP Servers to Enterprise With Agentgateway](https://blog.christianposta.com/connecting-saas-mcp-servers-to-enterprise-with-agentgateway/): *"SSO gives you user identity. What you need is user authorization: OAuth access tokens scoped to specific SaaS APIs on behalf of a specific user."* Both problems have the same answer: the gateway hosts its **own OAuth Authorization Server** at `/oauth-issuer/`.
 
-The gateway hosts its own OAuth Authorization Server at `/oauth-issuer/`. From an MCP client's perspective there is exactly one OAuth issuer: the gateway. `/oauth-issuer/register` returns a **single pre-registered** IdP `client_id`/`client_secret` to every MCP client — no IdP-dashboard churn, no Management-API DCR. The gateway then brokers the authorization code flow to the IdP, and the IdP-issued JWT is validated at the MCP backend.
+From an MCP client's perspective there is exactly one OAuth issuer: the gateway. `/oauth-issuer/register` returns a **single pre-registered** IdP client to every MCP client — no IdP-dashboard churn, no Management-API DCR — and the gateway brokers the authorization-code flow to the enterprise IdP. What happens *after* the downstream login is the variant:
 
-**One-time setup** (per Posta's Entra walkthrough — adapt to your IdP):
+| Variant | Solo docs name | After the user logs in at the IdP… | Token the MCP server receives | Extra config per backend |
+|---|---|---|---|---|
+| **A — Downstream-only** | [Downstream-only brokered login](https://docs.solo.io/agentgateway/latest/mcp/token-exchange/auth-only/overview/) | …the IdP-issued JWT goes to the client; nothing is exchanged | The IdP JWT (or a static service credential via `policies.auth`) | none |
+| **B — Chained (dual OAuth)** | [Brokered elicitation, chained flow](https://docs.solo.io/agentgateway/latest/mcp/token-exchange/elicitations/overview/) | …the issuer shows a consent page, runs a **second** OAuth flow at the upstream provider, and stores that token keyed on the user | The **upstream provider's** token, injected per request | `entElicitation.brokered.chainedAuth` + `entTokenExchange.solo.elicitation` |
 
-1. Create an IdP application (Entra App Registration, Auth0 Application, Okta App) representing the agentgateway.
-2. Expose an API scope (e.g., `mcp_access`).
-3. Pre-consent known clients. VS Code's baked-in MCP client ID is `aebc6443-996d-45c2-90f0-388ff96faa56` — useful for pre-consenting.
-4. Configure custom clients via additional IdP applications with proper redirect URIs.
+> **Eager, not lazy:** in both variants the OAuth work happens **at MCP connect time** — when the client first establishes the session — and every tool call inside it reuses the result. Contrast with [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) and [Elicitation](#elicitation-enterprise), where the user is prompted on demand through the Solo UI. See [Background: DCR and MCP](#background-dynamic-client-registration-and-mcp) for why gateway-brokered DCR exists.
 
-> **Eager vs lazy:** "Eager" here means the OAuth flow runs **at MCP connect time** — when the client first establishes the MCP session — not lazily on each tool call. Once the session is up, every tool call inside it reuses the same JWT. Contrast with the lazy patterns [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) and [Elicitation](#elicitation-enterprise), where the user is prompted on demand. See [Background: DCR and MCP](#background-dynamic-client-registration-and-mcp) for what DCR is and why gateway-brokered DCR exists.
+> **Honesty about the user experience.** "Sign in once and access everything" is accurate for the **corporate SSO** half. In the chained variant, a first-time user still clicks through each **upstream provider's** consent screen once; with four upstream backends that is four consent pop-ups at first connect. After that, the gateway persists the tokens and future sessions skip the pop-ups entirely.
 
-> **Related:** If you also need **per-upstream-provider tokens** (each MCP backend gets its own GitHub / GitLab / Atlassian token), see [Eager Upstream OAuth](#eager-upstream-oauth-gateway-as-oauth-issuer-enterprise) — same `/oauth-issuer/` machinery, plus per-backend token exchange.
+### Shared setup: the issuer (Helm values)
 
-### Configuration overview
-
-This pattern shares its controller-side configuration with [Eager Upstream OAuth's Helm values](#yaml--helm-values-the-gateway-as-oauth-issuer): the `tokenExchange.enabled` block, the `KGW_OAUTH_ISSUER_CONFIG` env var, and the `oauth-issuer` HTTPRoute. **Skip the per-upstream `entElicitation.brokered.chainedAuth`** — nothing is exchanged, the IdP JWT is what the MCP backend validates. In the Solo docs this is called [**downstream-only brokered login**](https://docs.solo.io/agentgateway/latest/mcp/token-exchange/auth-only/overview/). The single pre-registered IdP credentials live in `downstream_server` (and optionally `client_config.clients`) and are returned to every MCP client at `/oauth-issuer/register`.
-
-> **Verified (v2026.9.3) with Keycloak as the IdP:** `/.well-known/oauth-authorization-server/<path>` for the MCP resource returns `authorization_endpoint`, `token_endpoint`, and `registration_endpoint` all pointing at the gateway's `/oauth-issuer/*`; `POST /oauth-issuer/register` returns the pre-registered `client_id` without calling the IdP; a registration with a redirect URI outside `incoming_clients.allowed_redirect_uris` is refused with `invalid_redirect_uri`; the authorization-code + PKCE flow redirects to Keycloak, returns through `/oauth-issuer/callback/downstream`, and the token handed to the client is the **IdP-issued JWT** (`iss` = Keycloak, `azp` = the shared client), which the MCP backend accepts. Two things to get right: `audiences` on the policy must match what the IdP mints for the shared client (Keycloak needs an audience mapper; Auth0 needs the tenant default audience), and configure MCP authentication with `backend.mcp.authentication` on the backend, which is the shape the OAuth issuer uses to discover brokered resources.
-
-Minimal controller config (Helm values; replace the Entra block in the Eager section with your IdP):
+Both variants use the same controller-side configuration — the `tokenExchange` block (which starts the controller's port-7777 server hosting the issuer and the STS), the `KGW_OAUTH_ISSUER_CONFIG` env var, and an `HTTPRoute` for `/oauth-issuer` on each gateway.
 
 ```yaml
 tokenExchange:
   enabled: true
-  issuer: enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777
-  subjectValidators:                    # plural list (singular `subjectValidator` is deprecated)
+  issuer: "enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777"
+  tokenExpiration: 24h
+  maintenance:
+    enabled: true                       # janitor for expired tokens / stale elicitations
+  subjectValidators:                    # list, tried in order (singular form is deprecated)
     - validatorType: remote
-      issuer: https://idp.example.com/realms/mcp
+      issuer: "https://login.microsoftonline.com/<tenant>/v2.0"
       remoteConfig:
-        url: https://idp.example.com/realms/mcp/protocol/openid-connect/certs
+        url: "https://login.microsoftonline.com/<tenant>/discovery/v2.0/keys"
   actorValidators: [{validatorType: k8s}]
-  apiValidators:   [{validatorType: k8s}]
+  apiValidators:   [{validatorType: k8s}]     # all three validator lists are required at boot
+  database:                             # Variant B stores upstream tokens here; omit for SQLite (dev only)
+    type: postgres
+    postgres:
+      url: postgres://myuser:mypassword@postgres.postgres:5432/mydb
+
 controller:
   extraEnv:
     KGW_OAUTH_ISSUER_CONFIG: |
       {
-        "downstream_server": {
-          "name": "idp",
-          "client_id": "<shared-client-id>",
-          "client_secret": "<shared-client-secret>",
-          "authorize_url": "https://idp.example.com/realms/mcp/protocol/openid-connect/auth",
-          "token_url":     "https://idp.example.com/realms/mcp/protocol/openid-connect/token",
-          "redirect_uri":  "https://gateway.example.com/oauth-issuer/callback/downstream",
-          "scopes": ["openid", "profile"]
+        "gateway_config": {
+          "base_url": "https://gateway.example.com/oauth-issuer"
         },
-        "gateway_config": { "base_url": "https://gateway.example.com/oauth-issuer" },
+        "downstream_server": {
+          "name": "down",
+          "client_id": "<idp-client-id>",
+          "client_secret": "<idp-client-secret>",
+          "authorize_url": "https://login.microsoftonline.com/<tenant>/oauth2/v2.0/authorize",
+          "token_url":     "https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token",
+          "redirect_uri":  "https://gateway.example.com/oauth-issuer/callback/downstream",
+          "scopes":        ["api://<idp-client-id>/agentgateway"]
+        },
         "incoming_clients": {
           "allowed_redirect_uris": [
             "http://localhost:6274/oauth/callback",
-            "http://localhost:6274/oauth/callback/debug"
+            "http://localhost:6274/oauth/callback/debug",
+            "vscode://solo.agentgateway/callback"
           ]
+        },
+        "consent": {                                  // Variant B only; ignored for downstream-only resources
+          "enabled": true,
+          "force_refresh": false,
+          "platform_name": "Acme AI Gateway",
+          "legal_text": "By clicking Allow you authorize Acme AI Gateway to act on your behalf against the selected upstream service."
         }
       }
 ```
 
-> **Set `incoming_clients.allowed_redirect_uris`.** Without it the issuer accepts the shared client ID with *any* `redirect_uri`, so an authorization code could be sent to a destination you don't own. The controller logs a warning at startup when it is unset. Loopback `http://localhost` entries match regardless of port; MCP Inspector registers both `/oauth/callback` and `/oauth/callback/debug`, so list both.
+> **Set `incoming_clients.allowed_redirect_uris`.** Without it the issuer accepts the shared client ID with *any* `redirect_uri`, so an authorization code could be sent to a destination you don't own; the controller logs a warning at startup when it is unset. Loopback `http://localhost` entries match regardless of port. MCP Inspector registers both `/oauth/callback` and `/oauth/callback/debug`, so list both.
 
-The `/oauth-issuer` route can target the controller Service directly (same namespace) or an `AgentgatewayBackend` with `static: {host: enterprise-agentgateway.agentgateway-system.svc.cluster.local, port: 7777}` from any namespace.
+```yaml
+# Route /oauth-issuer/* on the gateway to the controller. Same namespace: target the Service directly.
+# Other namespaces: an AgentgatewayBackend with static host enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: oauth-issuer
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+    - name: agentgateway-proxy
+  rules:
+    - matches: [{path: {type: PathPrefix, value: /oauth-issuer}}]
+      backendRefs: [{name: enterprise-agentgateway, port: 7777}]
+```
 
-### Flow
+**One-time IdP setup** (per Posta's Entra walkthrough — adapt to your IdP):
+
+1. Create an IdP application (Entra App Registration, Auth0 Application, Okta App) representing the agentgateway.
+2. Expose an API scope (e.g., `mcp_access`) and make sure tokens for the shared client carry an audience your policy can check (Keycloak: audience mapper; Auth0: tenant default audience; Okta: the authorization server's audience).
+3. Register **both** `…/oauth-issuer/callback/downstream` and `…/oauth-issuer/callback/upstream` as redirect URIs.
+4. Pre-consent known clients. VS Code's baked-in MCP client ID is `aebc6443-996d-45c2-90f0-388ff96faa56` — useful for pre-consenting.
+
+### Shared setup: the MCP backend
+
+The same JWT-validation shape as [MCP OAuth + DCR](#mcp-oauth-with-dynamic-client-registration-oss) with one critical annotation that flips the authorization-server metadata to point at the gateway's issuer. Use `backend.mcp.authentication` here (on the backend, not route-level `jwtAuthentication.mcp`): that is the shape the issuer uses to discover brokered resources.
+
+```yaml
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: github
+spec:
+  mcp:
+    targets:
+      - name: mcp-target
+        static: { host: api.githubcopilot.com, port: 443 }
+  policies:
+    tls: {}
+    mcp:
+      authentication:
+        mode: Strict
+        issuer: https://login.microsoftonline.com/<tenant>/v2.0
+        audiences: [api://<idp-client-id>]
+        jwks:
+          backendRef:
+            name: entra-jwks                          # AgentgatewayBackend static -> login.microsoftonline.com:443
+            kind: AgentgatewayBackend
+            group: agentgateway.dev
+          jwksPath: <tenant>/discovery/v2.0/keys      # no leading slash — the controller adds one
+        resourceMetadata:
+          # Critical: serve the gateway issuer's metadata at .well-known/oauth-authorization-server/<path>
+          # so registration_endpoint / authorize / token all resolve to the gateway, not the IdP.
+          agentgateway.dev/issuer-proxy: http://enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777/oauth-issuer
+          authorizationServers: [https://gateway.example.com/mcp/github]
+          resource:             https://gateway.example.com/mcp/github
+          scopesSupported:      [api://<idp-client-id>/agentgateway]
+```
+
+The HTTPRoute for the MCP server must match `/mcp/github` **and** the two `/.well-known/oauth-*-server/mcp/github` discovery paths.
+
+### Variant A — Downstream-only (gateway-brokered DCR for Auth0 / Okta / Entra)
+
+Nothing more to configure: the resource metadata above declares the MCP resource, and the absence of an upstream OAuth mapping selects the downstream-only flow. The MCP server receives the IdP-issued JWT; if it needs a static service credential instead, add `policies.auth` on the backend (see [Static Secret Injection](#static-secret-injection-shared-credential-oss)).
 
 ```mermaid
 sequenceDiagram
@@ -906,18 +1007,18 @@ sequenceDiagram
     actor User
     participant MCP as MCP Client
     participant GW as Agent Gateway<br/>+ /oauth-issuer
-    participant IdP as IdP<br/>(Auth0 / Okta)
+    participant IdP as IdP<br/>(Auth0 / Okta / Entra)
     participant Tool as MCP Server
 
     MCP->>GW: GET /.well-known/oauth-authorization-server/mcp
     GW-->>MCP: AS metadata — registration_endpoint, authorize_url, token_url<br/>all point at gateway's /oauth-issuer/*
     MCP->>GW: POST /oauth-issuer/register (RFC 7591 DCR)
-    Note over GW: Gateway-Brokered DCR — returns pre-registered client_id from<br/>KGW_OAUTH_ISSUER_CONFIG.client_config.clients<br/>(no call to IdP)
+    Note over GW: Gateway-brokered DCR — returns the pre-registered client_id<br/>(no call to IdP; redirect_uri checked against the allowlist)
     GW-->>MCP: client_id (+ client_secret)
     MCP->>GW: GET /oauth-issuer/authorize (PKCE)
     GW-->>MCP: 302 to IdP /authorize<br/>(using downstream_server.client_id/secret)
     User->>IdP: SSO login
-    IdP-->>GW: Callback /oauth-issuer/callback/... (code)
+    IdP-->>GW: Callback /oauth-issuer/callback/downstream (code)
     GW->>IdP: POST /token (code -> JWT)
     IdP-->>GW: IdP-issued JWT
     GW-->>MCP: Gateway auth code -> IdP JWT
@@ -928,60 +1029,171 @@ sequenceDiagram
     GW-->>MCP: Response
 ```
 
-The DCR substitution at step 4 is the whole point of the pattern: `registration_endpoint` resolves to the gateway, not the IdP, so MCP clients never hit the IdP's rate-limited Management-API DCR.
+The DCR substitution at step 3 is the whole point: `registration_endpoint` resolves to the gateway, not the IdP, so MCP clients never hit the IdP's management-API DCR. Only the **registration** is shared — every user still logs in at the IdP as themselves.
 
-### MCP authentication policy
+> **Verified (v2026.9.3) with Keycloak as the IdP:** `/.well-known/oauth-authorization-server/<path>` for the MCP resource returns `authorization_endpoint`, `token_endpoint`, and `registration_endpoint` all pointing at the gateway's `/oauth-issuer/*`; `POST /oauth-issuer/register` returns the pre-registered `client_id` without calling the IdP; a registration with a redirect URI outside `incoming_clients.allowed_redirect_uris` is refused with `invalid_redirect_uri`; the authorization-code + PKCE flow redirects to Keycloak, returns through `/oauth-issuer/callback/downstream`, and the token handed to the client is the **IdP-issued JWT** (`iss` = Keycloak, `azp` = the shared client), which the MCP backend accepts. The one thing to get right is `audiences`: it must match what the IdP mints for the shared client.
 
-The standard JWT-validation shape with one critical annotation that flips the AS metadata to point at the gateway:
+#### Per-IdP notes (Auth0 vs Okta)
 
-```yaml
-apiVersion: enterpriseagentgateway.solo.io/v1alpha1
-kind: EnterpriseAgentgatewayPolicy
-metadata:
-  name: mcp-auth-eager
-spec:
-  targetRefs:
-    - group: agentgateway.dev
-      kind: AgentgatewayBackend
-      name: mcp-backend
-  backend:
-    mcp:
-      authentication:
-        mode: Strict
-        issuer: https://your-tenant.auth0.com/        # trailing slash matters for Auth0
-        audiences: [https://your-api/]
-        jwks:
-          backendRef:
-            name: idp-jwks
-            kind: AgentgatewayBackend
-            group: agentgateway.dev
-          jwksPath: .well-known/jwks.json             # no leading slash — controller appends one
-        resourceMetadata:
-          # Critical: tells the gateway to serve the eager-OAuth issuer's metadata at
-          # .well-known/oauth-authorization-server/<path> so registration_endpoint points
-          # at the gateway, not the IdP. Without this, MCP clients DCR against the IdP
-          # directly and hit the rate-limit / Mgmt-API problem this pattern exists to solve.
-          agentgateway.dev/issuer-proxy: http://enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777/oauth-issuer
-          authorizationServers: [https://gateway.example.com/mcp]
-          resource:             https://gateway.example.com/mcp
-```
-
-### Per-IdP gotchas (Auth0 vs Okta)
-
-The pattern is identical for both IdPs; the per-IdP setup details differ in non-obvious ways. Both columns below are validated against runnable workshop labs.
+The pattern is identical for both IdPs; the per-IdP setup details differ in non-obvious ways. Both columns are validated against runnable workshop labs.
 
 | Concern | Auth0 | Okta |
 |---|---|---|
 | `issuer` value | `https://<tenant>.auth0.com/` — **trailing slash required**. Auth0 puts it in the `iss` claim and the policy compares literally. | `https://<domain>/oauth2/<authz-server-id>` (typically `default`) — **no trailing slash**. The org server (no `/oauth2/...`) shifts every path; use a custom authz server. |
-| Audience handling | `KGW_OAUTH_ISSUER_CONFIG.downstream_server` has no `audience` field, so Auth0 won't mint API-scoped tokens unless you set the audience as the **tenant default** (Settings → API Authorization Settings → Default Audience), or drop `audiences` from the policy and validate issuer-only. | `aud` comes from the authz server's "Audience" setting (Security → API → Authorization Servers → *your-server* → Settings). No `?audience=` injection needed; just match the policy's `audiences` to whatever the server is issuing. |
-| JWKS path (in `mcp.authentication.jwks.jwksPath`) | `.well-known/jwks.json` | `oauth2/<authz-server-id>/v1/keys` (custom authz server) — `oauth2/v1/keys` if you're using the org server (issuer = `https://<domain>`). No leading slash — the controller appends one. |
-| Callback URL registration | Both `…/oauth-issuer/callback/downstream` AND `…/oauth-issuer/callback/upstream` must be in the Auth0 app's Allowed Callback URLs. Registering only one yields `invalid_request: callback url not allowed` after login. | Both required as Sign-in redirect URIs. Single-callback rejection: `The 'redirect_uri' parameter must be a Login redirect URI`. |
+| Audience handling | `downstream_server` has no `audience` field, so set the API identifier as the **tenant default audience** (Settings → API Authorization Settings → Default Audience), or drop `audiences` from the policy and validate issuer-only. | `aud` comes from the authz server's "Audience" setting (Security → API → Authorization Servers → *your-server* → Settings). Match the policy's `audiences` to it. |
+| JWKS path (`jwks.jwksPath`) | `.well-known/jwks.json` | `oauth2/<authz-server-id>/v1/keys` (custom authz server) — `oauth2/v1/keys` for the org server. |
+| Callback URL registration | Both `…/oauth-issuer/callback/downstream` and `…/oauth-issuer/callback/upstream` in Allowed Callback URLs; registering only one yields `invalid_request: callback url not allowed` after login. | Both required as Sign-in redirect URIs; single-callback rejection: `The 'redirect_uri' parameter must be a Login redirect URI`. |
 
 > **Walkthroughs (runnable end-to-end with MCP Inspector):**
 > - **Auth0** — [Lab 003 (gist)](https://gist.github.com/rvennam/26c3ae46c2f9b2342613a304ec78ca13#file-003-oidc-authentication-md) · [`mcp-eager-auth-auth0.md` (workshop)](https://github.com/solo-io/fe-enterprise-agentgateway-workshop/blob/main/mcp-eager-auth-auth0.md)
 > - **Okta** — [`mcp-eager-auth-okta.md` (workshop)](https://github.com/solo-io/fe-enterprise-agentgateway-workshop/blob/main/mcp-eager-auth-okta.md)
->
-> Both labs cover HTTPS/cert setup, Postgres, the full Helm-values block, MCP Inspector flow, and a CLI check that `registration_endpoint` actually got rewritten to the gateway.
+
+### Variant B — Chained (per-upstream OAuth: GitHub / GitLab / Atlassian)
+
+Add an upstream OAuth mapping to a backend and the issuer runs a second leg after the downstream login: an optional consent screen (`/oauth-issuer/consent`), the upstream provider's authorization-code flow, and `/oauth-issuer/callback/upstream`. The upstream token is stored keyed on the user and the resource, and `entTokenExchange.solo.elicitation` injects it into every request to that MCP server. Two sub-shapes, depending on whether the provider supports DCR:
+
+```yaml
+# B1 — static OAuth app (GitHub has no DCR): pre-register the app and give the gateway its client_id / client_secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: github-oauth-app
+  namespace: default
+type: Opaque
+stringData:
+  client_secret: "<github-app-client-secret>"
+---
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: github-upstream
+  namespace: default
+spec:
+  targetRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: github
+  backend:
+    entElicitation:
+      brokered:
+        mcpResourcePath: /mcp/github           # path part of the protected-resource identifier
+        chainedAuth:
+          oauth:
+            clientId: "<github-app-client-id>"
+            clientSecretRef: { name: github-oauth-app, key: client_secret }
+            scopes: [repo, read:org]
+            authorizeUrl:   https://github.com/login/oauth/authorize
+            accessTokenUrl: https://github.com/login/oauth/access_token
+    entTokenExchange:
+      solo:
+        elicitation: {}                        # inject the stored GitHub token on every call
+```
+
+```yaml
+# B2 — Dynamic Client Registration (GitLab, Atlassian support RFC 7591): omit clientId, point at the provider's discovery base URL
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: gitlab-upstream
+  namespace: default
+spec:
+  targetRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: gitlab
+  backend:
+    entElicitation:
+      brokered:
+        mcpResourcePath: /mcp/gitlab
+        chainedAuth:
+          oauth:
+            baseUrl: https://gitlab.com            # metadata discovery + DCR; or authorizeUrl/accessTokenUrl/registrationUrl
+            scopes: [mcp]
+            clientName: Acme AI Gateway            # client_name sent during DCR
+    entTokenExchange:
+      solo:
+        elicitation: {}
+```
+
+<details>
+<summary>Deprecated opaque-Secret shape (still accepted)</summary>
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata: {name: github-token-exchange, namespace: default}
+type: Opaque
+stringData:
+  app_id: "github"
+  authorize_url:    "https://github.com/login/oauth/authorize"
+  access_token_url: "https://github.com/login/oauth/access_token"
+  client_id:        "<github-app-client-id>"
+  client_secret:    "<github-app-client-secret>"
+  mcp_resource:     "/mcp/github"
+  scopes:           "repo read:org"
+---
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata: {name: github-exchange, namespace: default}
+spec:
+  targetRefs: [{group: agentgateway.dev, kind: AgentgatewayBackend, name: github}]
+  backend:
+    tokenExchange:
+      mode: ElicitationOnly
+      elicitation: {secretName: github-token-exchange}
+```
+
+</details>
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant MCP as MCP Client
+    participant GW as Agent Gateway (Proxy)<br/>+ /oauth-issuer
+    participant IdP as Enterprise IdP
+    participant Upstream as Upstream Provider<br/>(GitHub / GitLab / Atlassian)
+    participant DB as Token store
+    participant Tool as MCP Server
+
+    MCP->>GW: GET /.well-known/oauth-authorization-server/mcp/github
+    GW-->>MCP: Issuer = gateway, authorize URL = /oauth-issuer/authorize
+    MCP->>GW: /oauth-issuer/authorize (PKCE)
+    GW-->>MCP: 302 to IdP /authorize
+    User->>IdP: SSO login
+    IdP-->>GW: Callback /oauth-issuer/callback/downstream (code)
+    GW-->>User: Consent page (/oauth-issuer/consent) — Allow
+    GW-->>User: 302 to Upstream /authorize (static app or DCR-registered client)
+    User->>Upstream: Authorize
+    Upstream-->>GW: Callback /oauth-issuer/callback/upstream (code)
+    GW->>Upstream: POST /token → upstream access token
+    GW->>DB: Persist upstream token (user, resource)
+    GW-->>MCP: Gateway auth code → token
+    MCP->>GW: Call /mcp/github with the token
+    GW->>DB: Look up upstream token for (user, github)
+    GW->>Tool: Forward request with the upstream provider token
+    Tool-->>GW: Response
+    GW-->>MCP: Response
+```
+
+> **Verified (v2026.9.3)** with Keycloak as the downstream IdP and a second Keycloak realm standing in for the upstream SaaS provider: the MCP client is sent to `/oauth-issuer/authorize` → Keycloak login → consent page → upstream provider login → `/oauth-issuer/callback/upstream` → back to the client with a code → token. A subsequent `tools/call` reaches the MCP server with `Authorization: Bearer <upstream token>` (`iss` = the upstream provider, user = the logged-in user), and the MCP client never sees that token. Both the static-client (B1) and DCR (B2) shapes work. `entElicitation.brokered` configures the provider and the consent flow; `entTokenExchange.solo.elicitation: {}` is what looks up and injects the stored token on each request, so include both.
+
+#### How the chained variant differs from the lazy patterns
+
+| | [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) | [Elicitation](#elicitation-enterprise) | **Chained brokered issuer** |
+|---|---|---|---|
+| OAuth issuer the MCP client sees | External IdP | External IdP + Solo UI | **The gateway itself** |
+| When upstream consent is collected | First request that needs it | First request that needs it | **At downstream login (or before)** |
+| Interactive flows the user sees | 2 (SSO + Solo UI) | 1 per provider, on demand | **1 (SSO, plus a one-time consent per provider)** |
+| Upstream client registration | Per-provider in Solo UI | Per-provider in Solo UI | **Static config or DCR** |
+| Token storage | Solo Enterprise control plane | Solo Enterprise control plane | **STS database (Postgres) owned by the gateway** |
+
+### Operational notes
+
+- **HTTPS is mandatory** for non-localhost OAuth callbacks. The reference setups use ngrok or cert-manager + Let's Encrypt.
+- **Token storage in Postgres** survives restarts. SQLite is the default and suitable for dev only.
+- **Single front door:** MCP clients only need to know `https://gateway.example.com` — they discover OAuth metadata via `.well-known/oauth-authorization-server/<path>` and never see the IdP's or the upstream providers' OAuth endpoints directly.
+- **Reference deployments:** [solo-io/mk-k8s-demos/mcp-auth](https://github.com/solo-io/mk-k8s-demos/tree/main/mcp-auth) (Helmfile + chart) · [Enterprise MCP SSO with Microsoft Entra and Agentgateway (blog)](https://www.solo.io/blog/enterprise-mcp-sso-with-microsoft-entra-and-agentgateway)
 
 ---
 
@@ -1377,6 +1589,28 @@ spec:
 
 > The user's JWT must carry `may_act: { sub: "agent-service-account" }`. STS configuration is set via Helm `tokenExchange.*` values.
 
+> **What the agent must do.** Delegation is the one pattern where the *agent* makes a call, not just the gateway. The gateway validates the inbound user JWT (policy above); the agent then exchanges it for a delegated token and uses that token when calling tools:
+>
+> 1. Mount a projected ServiceAccount token into the agent pod (this is the actor credential):
+>    ```yaml
+>    volumes:
+>      - name: sts-actor
+>        projected:
+>          sources:
+>            - serviceAccountToken: {path: sts-actor, audience: agentgateway-sts, expirationSeconds: 3600}
+>    ```
+> 2. Exchange at the STS (RFC 8693) — `subject_token` is the user's JWT, `actor_token` is the mounted SA token:
+>    ```bash
+>    curl -s http://enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777/oauth2/token \
+>      -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+>      -d subject_token_type=urn:ietf:params:oauth:token-type:jwt -d "subject_token=$USER_JWT" \
+>      -d actor_token_type=urn:ietf:params:oauth:token-type:jwt   -d "actor_token=$(cat /var/run/secrets/tokens/sts-actor)" \
+>      -d audience=mcp-tool-server | jq -r .access_token
+>    ```
+> 3. Call the MCP server with the returned token. For a second hop, the next agent repeats step 2 with *this* token as the subject and its own SA token as the actor; the result nests `act.act`.
+>
+> In Python agents, [`agentsts-adk`](https://pypi.org/project/agentsts-adk/) does steps 2–3 for you (it reads the projected token and refreshes on expiry). [rvennam/agent-mesh-demo](https://github.com/rvennam/agent-mesh-demo) shows the whole chain, including the specialist agent that re-exchanges.
+
 > **Verified (v2026.9.3) — where the delegation happens.** The gateway-side `backend.tokenExchange: ExchangeOnly` policy exchanges the **subject token** on the agent's behalf and yields the impersonation shape (`sub`, no `act`). Delegation with an `act` claim is produced when the **agent itself** calls the STS (`POST http://enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777/oauth2/token`, grant `urn:ietf:params:oauth:grant-type:token-exchange`, `subject_token` = user JWT, `actor_token` = the agent's projected Kubernetes ServiceAccount token); the [`agentsts-adk`](https://pypi.org/project/agentsts-adk/) package does this for you, and [rvennam/agent-mesh-demo](https://github.com/rvennam/agent-mesh-demo) shows it end to end. Behavior at the STS endpoint:
 >
 > - Subject whose `may_act.sub` names the agent's ServiceAccount, plus that SA's token → token with `act: {sub: "system:serviceaccount:<ns>:<sa>", iss: <cluster issuer>}`.
@@ -1593,7 +1827,7 @@ Two sequential user-facing OAuth flows orchestrated by the gateway:
 
 > **Where this fits in Posta's framework.** In [MCP Authorization Patterns for Upstream API Calls](https://blog.christianposta.com/mcp-authorization-patterns-upstream-api-calls/), Christian Posta calls out five patterns for upstream API access. The pattern combining inbound OIDC at the gateway plus *lazy* outbound OAuth-via-elicitation is his recommended approach for organizations that want the agent flow to "just work" today — credentials never leak to MCP clients or servers, and the gateway is positioned to adopt emerging token-exchange standards.
 
-> **What changed in 2026.9.x.** The upstream OAuth client is now configured with **typed fields** under `backend.entElicitation` (`interactive.oauth.*` for the Solo-UI-driven flow, `brokered.chainedAuth.oauth.*` for the MCP-client-driven flow in [Eager Upstream OAuth](#eager-upstream-oauth-gateway-as-oauth-issuer-enterprise)); only the `client_secret` stays in a Secret referenced by `clientSecretRef`. The data-plane lookup/injection is a separate field, `backend.entTokenExchange.solo.elicitation: {}`. The old `backend.tokenExchange.elicitation.secretName` (an *opaque* Secret with `client_id`, `client_secret`, `authorize_url`, `access_token_url`, `scopes`, `app_id`) is deprecated but still works. Note that the `type: extauth.solo.io/oauth` Secret with `client-id`/`client-secret` keys belongs to the `AuthConfig` (ext-auth) side; the STS reads the typed fields above.
+> **What changed in 2026.9.x.** The upstream OAuth client is now configured with **typed fields** under `backend.entElicitation` (`interactive.oauth.*` for the Solo-UI-driven flow, `brokered.chainedAuth.oauth.*` for the MCP-client-driven flow in [Brokered OAuth Issuer — Variant B](#variant-b--chained-per-upstream-oauth-github--gitlab--atlassian)); only the `client_secret` stays in a Secret referenced by `clientSecretRef`. The data-plane lookup/injection is a separate field, `backend.entTokenExchange.solo.elicitation: {}`. The old `backend.tokenExchange.elicitation.secretName` (an *opaque* Secret with `client_id`, `client_secret`, `authorize_url`, `access_token_url`, `scopes`, `app_id`) is deprecated but still works. Note that the `type: extauth.solo.io/oauth` Secret with `client-id`/`client-secret` keys belongs to the `AuthConfig` (ext-auth) side; the STS reads the typed fields above.
 
 ### YAML — Enterprise (downstream OIDC + upstream elicitation)
 
@@ -1676,281 +1910,6 @@ sequenceDiagram
     GW-->>User: Result
 ```
 
-
----
-
-## Eager Upstream OAuth (Gateway as OAuth Issuer) `[Enterprise]`
-
-> **Available:** GA from Solo Enterprise for agentgateway **2.3.x**. The canonical reference deployment is [`solo-io/mk-k8s-demos/mcp-auth`](https://github.com/solo-io/mk-k8s-demos/tree/main/mcp-auth) (Helmfile + Helm chart). Earlier prototype shapes live at [`solo-io/agentgateway-eager-oauth`](https://github.com/solo-io/agentgateway-eager-oauth).
-
-> **When to use:** You expose multiple MCP servers backed by different third-party providers (GitHub, GitLab, Atlassian, Databricks…) and you want users to sign in to enterprise SSO **once** plus complete a **one-time consent at each upstream provider** — and then have no further OAuth prompts for the lifetime of those stored tokens.
-
-> **Honesty about the user experience.** The Solo marketing line is "sign in once and access everything." That's accurate for the **corporate SSO** half — login at the IdP happens once and is reused. But for each **upstream provider** (GitHub, GitLab, Atlassian, Databricks), a brand-new user still has to click through that provider's consent screen the first time. With four upstream backends, a first-time user sees four consent pop-ups in sequence at MCP-connect time. After that one-time gauntlet, the gateway persists the tokens and future sessions skip the pop-ups entirely.
-
-> **Why this pattern exists, per Posta.** In [Connecting SaaS MCP Servers to Enterprise With Agentgateway](https://blog.christianposta.com/connecting-saas-mcp-servers-to-enterprise-with-agentgateway/), Christian Posta puts it bluntly: *"SSO gives you user identity. What you need is user authorization: OAuth access tokens scoped to specific SaaS APIs on behalf of a specific user."* Federated SSO alone is not enough — most SaaS providers want their own OAuth tokens, not just identity assertions from your IdP. Provider reality check: GitHub uses standard OAuth, Atlassian's Remote MCP requires federated credentials, Databricks offers some SSO-to-OAuth mapping, and "most other providers don't support it at all."
-
-The gateway hosts its **own OAuth Authorization Server** at `/oauth-issuer/`. From an MCP client's perspective there is exactly one OAuth issuer: the gateway. Behind the scenes the gateway:
-
-1. Delegates the user's actual login to an **enterprise IdP** (Entra/Okta/Cognito/Keycloak) via `/oauth-issuer/callback/downstream` — same Authorization Code flow as Variant A.
-2. **Pre-stages** upstream OAuth credentials for each MCP backend at config time (static OAuth app for GitHub, Dynamic Client Registration for GitLab and Atlassian).
-3. Shows an optional **consent screen** (`/oauth-issuer/consent`), then chains into the upstream provider's OAuth flow and receives the upstream token at `/oauth-issuer/callback/upstream`.
-4. Persists upstream tokens (SQLite by default, **PostgreSQL** for anything beyond a demo) so they survive restarts and are reused across requests.
-5. Each MCP backend declares its upstream provider with `backend.entElicitation.brokered.chainedAuth` and turns on per-request injection with `backend.entTokenExchange.solo.elicitation: {}`. In the Solo docs this is [**brokered elicitation (chained flow)**](https://docs.solo.io/agentgateway/latest/mcp/token-exchange/elicitations/overview/).
-
-> **Verified (v2026.9.3)** with Keycloak as the downstream IdP and a second Keycloak realm standing in for the upstream SaaS provider: the MCP client is sent to `/oauth-issuer/authorize` → Keycloak login → consent page → upstream provider login → `/oauth-issuer/callback/upstream` → back to the client with a code → token. A subsequent `tools/call` reaches the MCP server with `Authorization: Bearer <upstream token>` (`iss` = the upstream provider, user = the logged-in user), and the MCP client never sees that token. Both the static-client variant and the DCR variant (`baseUrl` discovery) work. `entElicitation.brokered` configures the provider and the consent flow; `entTokenExchange.solo.elicitation: {}` is what looks up and injects the stored token on each request, so include both.
-
-> **What does "Eager" mean here?** The OAuth flow with each upstream provider runs **at MCP connect time** — when the client first establishes the MCP session — not lazily on the first tool call that needs the token. Once the session is up, every tool call inside it reuses the cached upstream tokens without further user interaction. Contrast with the lazy patterns [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) and [Elicitation](#elicitation-enterprise), where the user is prompted on demand whenever a request needs a fresh upstream token.
-
-> **Single-IdP shape?** If you don't need per-upstream-provider tokens — i.e. one IdP, JWT goes straight to the backend, and you just need gateway-brokered DCR because real DCR isn't viable on your IdP — see [MCP OAuth — Gateway-Brokered DCR for Auth0 / Okta](#mcp-oauth--gateway-brokered-dcr-for-auth0--okta-enterprise). It uses the same `/oauth-issuer/` machinery without the per-backend `backend.tokenExchange` policy or Variants 1/2 below.
-
-### How it differs from the lazy patterns
-
-| | [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) | [Elicitation](#elicitation-enterprise) | **Eager Upstream OAuth** |
-|---|---|---|---|
-| OAuth issuer the MCP client sees | External IdP | External IdP + Solo UI | **The gateway itself** |
-| When upstream consent is collected | First request that needs it | First request that needs it | **At downstream login (or before)** |
-| Interactive flows the user sees | 2 (SSO + Solo UI) | 1 per provider, on demand | **1 (SSO only)** |
-| Upstream client registration | Per-provider in Solo UI | Per-provider in Solo UI | **Static config or DCR** |
-| Token storage | Solo Enterprise control plane | Solo Enterprise control plane | **PostgreSQL owned by the gateway** |
-
-### Flow
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User
-    participant MCP as MCP Client
-    participant GW as Agent Gateway (Proxy)<br/>+ /oauth-issuer
-    participant IdP as Enterprise IdP (Entra)
-    participant Upstream as Upstream Provider<br/>(GitHub / GitLab / Atlassian)
-    participant DB as Postgres
-    participant Tool as MCP Server
-
-    MCP->>GW: GET /.well-known/oauth-authorization-server/mcp/github
-    GW-->>MCP: Issuer = gateway, authorize URL = /oauth-issuer/authorize
-    MCP->>GW: /oauth-issuer/authorize (PKCE)
-    GW-->>MCP: 302 to IdP /authorize
-    User->>IdP: SSO login
-    IdP-->>GW: Callback /oauth-issuer/callback/downstream (code)
-    GW->>IdP: POST /token (code) → user JWT
-    GW-->>MCP: Issue gateway-issued auth code → access token
-    MCP->>GW: Call /mcp/github with gateway-issued token
-    GW->>DB: Look up upstream token for (user, github)
-    alt no upstream token yet
-        GW->>Upstream: OAuth code-flow (or DCR + code-flow) at /oauth-issuer/callback/upstream
-        Upstream-->>GW: Upstream access token
-        GW->>DB: Persist upstream token
-    end
-    GW->>Tool: Forward request with upstream provider token
-    Tool-->>GW: Response
-    GW-->>MCP: Response
-```
-
-### YAML — Helm values (the gateway as OAuth issuer)
-
-```yaml
-tokenExchange:
-  enabled: true
-  issuer: "enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777"
-  tokenExpiration: 24h
-  maintenance:
-    enabled: true                       # janitor for expired tokens / stale elicitations
-  subjectValidators:                    # list, tried in order (singular form is deprecated)
-    - validatorType: remote
-      issuer: "https://login.microsoftonline.com/<tenant>/v2.0"
-      remoteConfig:
-        url: "https://login.microsoftonline.com/<tenant>/discovery/v2.0/keys"
-  actorValidators: [{validatorType: k8s}]
-  apiValidators:   [{validatorType: k8s}]     # all three validator lists are required at boot
-  database:
-    type: postgres
-    postgres:
-      url: postgres://myuser:mypassword@postgres.postgres:5432/mydb
-
-controller:
-  extraEnv:
-    KGW_OAUTH_ISSUER_CONFIG: |
-      {
-        "gateway_config": {
-          "base_url": "https://gateway.example.com/oauth-issuer"
-        },
-        "downstream_server": {
-          "name": "down",
-          "client_id": "<entra-client-id>",
-          "client_secret": "<entra-client-secret>",
-          "authorize_url": "https://login.microsoftonline.com/<tenant>/oauth2/v2.0/authorize",
-          "token_url":     "https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token",
-          "redirect_uri":  "https://gateway.example.com/oauth-issuer/callback/downstream",
-          "scopes":        ["api://<entra-client-id>/agentgateway"]
-        },
-        "incoming_clients": {
-          "allowed_redirect_uris": [
-            "http://localhost:6274/oauth/callback",
-            "http://localhost:6274/oauth/callback/debug",
-            "vscode://solo.agentgateway/callback"
-          ]
-        },
-        "consent": {
-          "enabled": true,
-          "force_refresh": false,
-          "platform_name": "Acme AI Gateway",
-          "legal_text": "By clicking Allow you authorize Acme AI Gateway to act on your behalf against the selected upstream service."
-        }
-      }
-```
-
-The proxy pod reaches the STS through `STS_URI` on the `EnterpriseAgentgatewayParameters`; the typed `entTokenExchange.solo` path defaults to the controller Service, so this is only needed for the legacy `backend.tokenExchange` field:
-
-```yaml
-spec:
-  env:
-    - name: STS_URI
-      # /oauth2/token for ExchangeOnly, /elicitations/oauth2/token for legacy elicitation — not both
-      value: http://enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777/oauth2/token
-    - name: STS_AUTH_TOKEN
-      value: /var/run/secrets/xds-tokens/xds-token
-```
-
-### YAML — Variant 1: static OAuth app (GitHub)
-
-GitHub doesn't support DCR, so you pre-register an OAuth app there and give the gateway its `client_id` / `client_secret`:
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: github-oauth-app
-  namespace: default
-type: Opaque
-stringData:
-  client_secret: "<github-app-client-secret>"
----
-apiVersion: enterpriseagentgateway.solo.io/v1alpha1
-kind: EnterpriseAgentgatewayPolicy
-metadata:
-  name: github-upstream
-  namespace: default
-spec:
-  targetRefs:
-    - group: agentgateway.dev
-      kind: AgentgatewayBackend
-      name: github
-  backend:
-    entElicitation:
-      brokered:
-        mcpResourcePath: /mcp/github           # path part of the protected-resource identifier
-        chainedAuth:
-          oauth:
-            clientId: "<github-app-client-id>"
-            clientSecretRef: { name: github-oauth-app, key: client_secret }
-            scopes: [repo, read:org]
-            authorizeUrl:   https://github.com/login/oauth/authorize
-            accessTokenUrl: https://github.com/login/oauth/access_token
-    entTokenExchange:
-      solo:
-        elicitation: {}                        # inject the stored GitHub token on every call
-```
-
-<details>
-<summary>Deprecated opaque-Secret shape (still accepted)</summary>
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata: {name: github-token-exchange, namespace: default}
-type: Opaque
-stringData:
-  app_id: "github"
-  authorize_url:    "https://github.com/login/oauth/authorize"
-  access_token_url: "https://github.com/login/oauth/access_token"
-  client_id:        "<github-app-client-id>"
-  client_secret:    "<github-app-client-secret>"
-  mcp_resource:     "/mcp/github"
-  scopes:           "repo read:org"
----
-apiVersion: enterpriseagentgateway.solo.io/v1alpha1
-kind: EnterpriseAgentgatewayPolicy
-metadata: {name: github-exchange, namespace: default}
-spec:
-  targetRefs: [{group: agentgateway.dev, kind: AgentgatewayBackend, name: github}]
-  backend:
-    tokenExchange:
-      mode: ElicitationOnly
-      elicitation: {secretName: github-token-exchange}
-```
-
-</details>
-
-### YAML — Variant 2: Dynamic Client Registration (GitLab, Atlassian)
-
-GitLab and Atlassian support RFC 7591 DCR, so the gateway can register itself as an OAuth client at runtime — omit `clientId` and point at the provider's discovery base URL (or an explicit `registrationUrl`):
-
-```yaml
-apiVersion: enterpriseagentgateway.solo.io/v1alpha1
-kind: EnterpriseAgentgatewayPolicy
-metadata:
-  name: gitlab-upstream
-  namespace: default
-spec:
-  targetRefs:
-    - group: agentgateway.dev
-      kind: AgentgatewayBackend
-      name: gitlab
-  backend:
-    entElicitation:
-      brokered:
-        mcpResourcePath: /mcp/gitlab
-        chainedAuth:
-          oauth:
-            baseUrl: https://gitlab.com            # metadata discovery + DCR; or authorizeUrl/accessTokenUrl/registrationUrl
-            scopes: [mcp]
-            clientName: Acme AI Gateway            # client_name sent during DCR
-    entTokenExchange:
-      solo:
-        elicitation: {}
-```
-
-### YAML — MCP backend wiring (the same for both variants)
-
-```yaml
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayBackend
-metadata:
-  name: github
-spec:
-  mcp:
-    targets:
-      - name: mcp-target
-        static: { host: api.githubcopilot.com, port: 443 }
-  policies:
-    tls: {}
-    mcp:
-      authentication:
-        mode: Strict
-        issuer: https://sts.windows.net/<tenant>/
-        audiences: [api://<entra-client-id>]
-        jwks:
-          backendRef:
-            name: entra-jwks
-            kind: AgentgatewayBackend
-            group: agentgateway.dev
-          jwksPath: <tenant>/discovery/v2.0/keys
-        resourceMetadata:
-          # Tells MCP clients to find auth metadata at the gateway's own /oauth-issuer
-          agentgateway.dev/issuer-proxy: http://enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777/oauth-issuer
-          authorizationServers: [https://gateway.example.com/mcp/github]
-          resource:             https://gateway.example.com/mcp/github
-          scopesSupported:      [api://<entra-client-id>/agentgateway]
-```
-
-### Operational notes
-
-- **HTTPS is mandatory** for non-localhost OAuth callbacks. The reference setup uses ngrok or cert-manager + Let's Encrypt.
-- **Token storage in Postgres** survives restarts. SQLite in-memory is supported for dev only.
-- **DCR for GitLab** can be done out-of-band first (the README shows a `curl https://gitlab.com/oauth/register`); the runtime registration is what makes scaling to many providers tractable.
-- **Single front door:** MCP clients only need to know `https://gateway.example.com` — they discover OAuth metadata via `.well-known/oauth-authorization-server/<path>` and never see the upstream providers' OAuth endpoints directly.
-
-> **Source / repo:** [solo-io/mk-k8s-demos/mcp-auth](https://github.com/solo-io/mk-k8s-demos/tree/main/mcp-auth) (canonical Helmfile + chart) · [solo-io/agentgateway-eager-oauth](https://github.com/solo-io/agentgateway-eager-oauth) (earlier prototype) · [Enterprise MCP SSO with Microsoft Entra and Agentgateway (blog)](https://www.solo.io/blog/enterprise-mcp-sso-with-microsoft-entra-and-agentgateway)
 
 ---
 
@@ -2472,7 +2431,8 @@ sequenceDiagram
 | **AuthConfig** | Solo Enterprise CRD (`extauth.solo.io/v1`) describing an external auth flow (OIDC, OAuth2, API key, OPA, etc.) consumed by the Enterprise external auth service. Used by `entExtAuth`. |
 | **DCR** | Dynamic Client Registration (RFC 7591). Lets OAuth clients register themselves with an authorization server at runtime instead of via human onboarding. See [Background: DCR and MCP](#background-dynamic-client-registration-and-mcp) for why MCP needs it and where it works. |
 | **Eager OAuth** | An OAuth flow that runs **at MCP connect time** — when the client first establishes the MCP session — rather than lazily on each tool call. Once the session is up, every tool call inside it reuses the cached token(s). Contrasts with [Elicitation](#elicitation-enterprise) and [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) (lazy: prompt the user when a request needs a fresh token). |
-| **Gateway-Brokered DCR** | A workaround for IdPs whose real DCR is impractical at scale (Auth0, Okta — DCR is gated behind their management APIs). The gateway intercepts the DCR call and returns a single pre-registered IdP `client_id`/`client_secret` to every MCP client, instead of forwarding to the IdP. See [MCP OAuth — Gateway-Brokered DCR for Auth0 / Okta](#mcp-oauth--gateway-brokered-dcr-for-auth0--okta-enterprise). |
+| **Brokered OAuth Issuer** | The gateway's own OAuth Authorization Server at `/oauth-issuer/` (Enterprise). *Downstream-only* (Variant A) brokers the IdP login and hands the IdP JWT to the client; *chained* (Variant B) adds a consent page and a second OAuth flow at an upstream SaaS provider and injects that token per request. Solo docs: "downstream-only brokered login" and "brokered elicitation (chained flow)". |
+| **Gateway-Brokered DCR** | A workaround for IdPs whose real DCR is impractical at scale (Auth0, Okta — DCR is gated behind their management APIs). The gateway intercepts the DCR call and returns a single pre-registered IdP `client_id`/`client_secret` to every MCP client, instead of forwarding to the IdP. See [Brokered OAuth Issuer — Variant A (downstream-only)](#variant-a--downstream-only-gateway-brokered-dcr-for-auth0--okta--entra). |
 | **`entExtAuth`** | Enterprise field on `EnterpriseAgentgatewayPolicy.traffic` that delegates auth to the Solo Enterprise external auth service via an `AuthConfig`. |
 | **`extAuth`** | OSS field on `AgentgatewayPolicy.traffic` that delegates to a user-supplied gRPC or HTTP service via the Envoy `ext_authz` protocol. |
 | **Elicitation** | An agentgateway flow that prompts a user to complete an upstream OAuth authorization out-of-band (in the Solo UI) so the gateway can inject the resulting token on later requests. Enterprise-only. |

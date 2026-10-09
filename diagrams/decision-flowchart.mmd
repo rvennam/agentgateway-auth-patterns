@@ -1,0 +1,46 @@
+flowchart TD
+    Q0{How should this request<br/>be authenticated?}
+    Q0 --> Q1{Does the client already<br/>hold a valid token?}
+
+    Q1 -->|Yes, and the backend<br/>should see it as-is| PT[Passthrough Token]
+    Q1 -->|Yes, but it must be<br/>re-scoped before an agent sees it| Q2{Who holds the<br/>actor token?}
+    Q1 -->|No| Q3{What kind of credential<br/>is needed?}
+
+    Q2 -->|"Nobody — swap the user token<br/>at the gateway (sub only)"| IMP[OBO Impersonation<br/>backend.tokenExchange: ExchangeOnly<br/>or backend.auth.oauthTokenExchange]
+    Q2 -->|"The agent — it presents its own<br/>ServiceAccount token to the STS"| DEL[OBO Delegation<br/>agent calls STS :7777 with actor_token<br/>→ act claim, nested per hop]
+    Q2 -->|"The mesh — caller identity comes<br/>from mTLS (SPIFFE), no token"| MESH[Mesh Identity Authorization<br/>waypoint CEL on source.identity.*]
+
+    Q3 -->|User login, interactive| Q4{Who runs the OIDC redirect?}
+    Q3 -->|Machine / service| Q5{What does the<br/>service present?}
+    Q3 -->|MCP client connecting<br/>to an MCP server| Q6{Does your IdP allow open<br/>Dynamic Client Registration?}
+    Q3 -->|Credential for the<br/>upstream / backend| Q7{Static or per-user?}
+
+    Q4 -->|The client app brings a JWT| JWT[Standard OIDC / JWT]
+    Q4 -->|Your own auth service| EXT[BYO External Auth]
+    Q4 -->|"The gateway (ext-auth) logs in,<br/>then re-scopes the token"| GWOIDC[Gateway-Mediated OIDC<br/>+ Token Exchange]
+
+    Q5 -->|API key| APIKEY[API Key Auth]
+    Q5 -->|Username / password| BASIC[Basic Auth]
+    Q5 -->|X.509 client certificate| MTLS[FrontendTLS mTLS]
+
+    Q6 -->|"Yes (Keycloak, spec-compliant)"| DCR[MCP OAuth + DCR]
+    Q6 -->|"No (Auth0 / Okta / Entra)"| Q8{Do the MCP servers need<br/>their own per-user SaaS token?}
+    Q8 -->|No — IdP JWT is enough| BROKA[Brokered OAuth Issuer<br/>Variant A: downstream-only]
+    Q8 -->|"Yes (GitHub / GitLab / Atlassian)"| BROKB[Brokered OAuth Issuer<br/>Variant B: chained]
+
+    Q7 -->|Static, shared by all users| STATIC[Static Secret Injection]
+    Q7 -->|Static, chosen by JWT claim| CLAIM[Claim-Based Token Mapping]
+    Q7 -->|"Per-user OAuth, user present<br/>(Solo UI consent)"| Q9{Also need a gateway login first?}
+    Q7 -->|"Per-user OAuth at MCP connect time,<br/>no Solo UI"| BROKB
+    Q7 -->|"In-mesh agents calling an LLM,<br/>no key in the pod"| LLMEG[LLM Egress with<br/>Waypoint-Injected Credentials]
+    Q9 -->|No| ELIC[Elicitation]
+    Q9 -->|Yes| DBL[Double OAuth Flow]
+
+    classDef oss fill:#e3f2e1,stroke:#3b7a3b,color:#111
+    classDef ent fill:#fff3cd,stroke:#b8860b,color:#111
+    classDef mesh fill:#e8e0f7,stroke:#6a1b9a,color:#111
+    classDef q fill:#eef0fb,stroke:#5c6bc0,color:#111
+    class PT,JWT,EXT,APIKEY,BASIC,MTLS,DCR,STATIC,CLAIM oss
+    class IMP,DEL,GWOIDC,BROKA,BROKB,ELIC,DBL ent
+    class MESH,LLMEG mesh
+    class Q0,Q1,Q2,Q3,Q4,Q5,Q6,Q7,Q8,Q9 q
