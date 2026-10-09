@@ -304,9 +304,9 @@ sequenceDiagram
     participant GW as Agent Gateway
     participant Backend
     Client->>GW: Request + Authorization: Bearer <key> (or x-api-key via location.header)
-    GW->>GW: Look up key in labeled K8s Secret(s); metadata -> apiKey.* for CEL
+    GW->>GW: Look up key in labeled K8s Secret(s), expose metadata as apiKey.* for CEL
     alt key valid
-        GW->>Backend: Forward (key stripped; identity via CEL/transformation)
+        GW->>Backend: Forward (key stripped, identity available via CEL / transformation)
         Backend-->>GW: Response
         GW-->>Client: Response
     else key invalid
@@ -1013,7 +1013,7 @@ sequenceDiagram
     MCP->>GW: GET /.well-known/oauth-authorization-server/mcp
     GW-->>MCP: AS metadata — registration_endpoint, authorize_url, token_url<br/>all point at gateway's /oauth-issuer/*
     MCP->>GW: POST /oauth-issuer/register (RFC 7591 DCR)
-    Note over GW: Gateway-brokered DCR — returns the pre-registered client_id<br/>(no call to IdP; redirect_uri checked against the allowlist)
+    Note over GW: Gateway-brokered DCR — returns the pre-registered client_id<br/>(no call to the IdP, redirect_uri checked against the allowlist)
     GW-->>MCP: client_id (+ client_secret)
     MCP->>GW: GET /oauth-issuer/authorize (PKCE)
     GW-->>MCP: 302 to IdP /authorize<br/>(using downstream_server.client_id/secret)
@@ -2404,7 +2404,7 @@ sequenceDiagram
     participant LLM as api.openai.com
     Agent->>ZT: POST http://myllm.com/openai/v1/chat/completions
     ZT->>WP: HBONE (mTLS, SPIFFE identity)
-    WP->>WP: authorize caller; pick backend by path; read Secret
+    WP->>WP: authorize caller, pick backend by path, read Secret
     WP->>LLM: TLS + Authorization: Bearer sk-... (+ gen_ai.* telemetry)
     LLM-->>WP: completion
     WP-->>Agent: completion (budget / guardrails can apply here too)
