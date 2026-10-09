@@ -1,0 +1,14 @@
+htpasswd lines: alice:$apr1$wpgmSaj2$a5QH/r3ouGa7SGp8W6LvX1 | bob:$2y$05$gnkdi1vkTN/MqLQLQwtwcuQPsgdkPqWYE.PSe6mky4d4jdZ3OnjGy
+WARN policy agentgatewaypolicy/basic-auth not Accepted: 
+PASS [401] inline users: no creds -> 401
+WWW-Authenticate: www-authenticate: Basic realm="agentgateway"
+PASS [200] inline users: alice (apr1/MD5) -> 200
+PASS [200] inline users: bob (bcrypt) -> 200
+PASS [401] inline users: wrong pw -> 401
+-- backend sees: {"User-Agent":["curl/8.7.1"]}
+policy status (README secret key 'htpasswd'): 
+FAIL [got 401 want 200] README secretRef (key htpasswd, no secretRef.key): alice :: basic authentication failure: invalid credentials
+WARN policy agentgatewaypolicy/basic-auth not Accepted: 
+PASS [200] secretRef.key=htpasswd: alice -> 200
+PASS [401] secretRef.key=htpasswd: bad -> 401
+== 02-basic: PASS=6 FAIL=1

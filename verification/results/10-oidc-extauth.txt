@@ -1,0 +1,9 @@
+authconfig status: {"details":{"observed_generation":"1"},"state":"Accepted"}
+PASS unauthenticated -> 302 to Keycloak authorize (http://136.119.100.44:8080/keycloak/realms/authtest/protocol/openid-connect/auth?client_id...)
+-- IdP redirects to callback: http://136.119.100.44:8080/oidc/callback?state=eyJhbGciOiJIUzI1NiIsInR... 
+-- callback response: 302 http://136.119.100.44:8080/oidc/headers
+FAIL after login got 302: 
+-- Authorization header at backend: 
+FAIL OIDC+exchange http=302 body=
+FAIL README single-policy: http=302 
+== 10-oidc-extauth: PASS=1 FAIL=3

@@ -1,0 +1,21 @@
+alice claims: {"iss":"http://136.119.100.44:8080/keycloak/realms/authtest","aud":["authtest-mcp","account"],"sub":"f5c83254-8d08-415f-91a3-5bf3de16df51","tier":"paid","role":"admin"}
+PASS [401] remote JWKS: no token -> 401
+PASS [401] remote JWKS: garbage -> 401
+PASS [200] remote JWKS: keycloak alice -> 200
+PASS [401] remote JWKS: other issuer -> 401
+-- backend sees (Authorization stripped by default?): {}
+PASS [200] inline provider: local sub=agent-service -> 200
+PASS [403] inline provider: local sub=someone (CEL deny) -> 403
+PASS [401] inline provider: wrong aud -> 401
+PASS [401] inline provider: expired -> 401
+PASS [200] 2nd provider: keycloak alice role=admin -> 200
+PASS [403] 2nd provider: keycloak bob role=analyst -> 403
+PASS [200] Optional: no token
+PASS [401] Optional: bad token
+PASS [200] Optional: good token
+PASS [200] Permissive: no token
+PASS [200] Permissive: bad token
+PASS [200] Permissive: good token
+jwks.remote.url status: Policy accepted Attached to all targets
+PASS [200] jwks.remote.url: keycloak alice -> 200
+== 04-jwt: PASS=17 FAIL=0

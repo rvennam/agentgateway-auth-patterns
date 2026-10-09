@@ -1,0 +1,16 @@
+README listeners[].tls.frontendValidation (server dry-run): The request is invalid: patch: Invalid value: "{\"apiVersion\":\"gateway.networking.k8s.io/v1\",\"kind\":\"Gateway\",\"metadata\":{\"annotations\":{\"kubectl.kubernetes.io/last-applied-configuration\":\"{\\\"apiVersion\\\":\\\"gateway.networking.k8s.
+gateway listeners status: [{"name":"http","conds":["Conflicted"]}]
+PASS [000] mTLS: no client cert -> TLS failure (curl exit)
+FAIL [got 000 want 200] mTLS: valid client cert -> 200 :: {   "args": {},   "headers": {     "Accept": [       "*/*"     ],     "Host": [       "136.119.100.44:8080"     ],     "User-Agent": [       "curl/8.7.1"     ]   },   "method": "GET",   "origin": "10.28.0.34:35378",   "url": "http://136.119.100.44:8080/get" } 
+PASS [000] mTLS: client cert from untrusted CA -> failure
+-- backend sees with mTLS: 
+PASS [200] http:8080 listener unaffected -> 200
+FAIL [got 400 want 502] no BackendTLS: gateway speaks plaintext to TLS backend -> 5xx :: <html> <head><title>400 The plain HTTP request was sent to HTTPS port</title></head> <body> <center><h1>400 Bad Request</h1></center> <center>The plain HTTP request was sent to HTTPS port</center> <hr><center>nginx/1.27.5</center> </body> </html> 
+README backend.tls.hostname: Error from server (BadRequest): error when creating "STDIN": AgentgatewayPolicy in version "v1alpha1" cannot be handled as a AgentgatewayPolicy: strict decoding error: unknown field "spec.backend.tls.
+PASS [200] inline backend.tls + correct CA -> 200
+-- tls backend saw: {"tls":"ok","host":"136.119.100.44","uri":"/tlsbackend/x","auth":""}
+FAIL [got 503 want 502] inline backend.tls + WRONG CA -> 5xx :: upstream call failed: Connect: invalid peer certificate: UnknownIssuer
+PASS [200] inline backend.tls insecureSkipVerify: All -> 200
+BackendTLSPolicy status: Accepted ResolvedRefs Accepted ResolvedRefs Accepted ResolvedRefs=True True True True True True
+PASS [200] BackendTLSPolicy (Gateway API std) + correct CA -> 200
+== 05-tls: PASS=6 FAIL=3

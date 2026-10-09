@@ -1,0 +1,7 @@
+PASS [401] auth0: no token -> 401
+-- protected-resource: {"resource":"http://136.119.100.44:8080/mcp-auth0","authorization_servers":["http://136.119.100.44:8080/mcp-auth0"],"mcp_protocol_version":"2025-06-18","resource_type":"mcp-server","scopes_supported":["openid","profile","offline_access"]}
+-- AS metadata: {"issuer":"http://136.119.100.44:8080/mcp-auth0","authorization_endpoint":"https://dev-qlf8ntg1.us.auth0.com/authorize?audience=https://api.rvennam.com/","token_endpoint":"https://dev-qlf8ntg1.us.auth0.com/oauth/token","registration_endpoint":"https://dev-qlf8ntg1.us.auth0.com/oidc/register","jwks_uri":"https://dev-qlf8ntg1.us.auth0.com/.well-known/jwks.json"}
+PASS [200] auth0: client-credentials JWT -> 200
+PASS [401] auth0: keycloak token -> 401
+-- DCR via adapter (https://dev-qlf8ntg1.us.auth0.com/oidc/register): {"client_id":"null","error":"Bad Request","error_description":null,"message":"dynamic client registration is disabled"}
+== 07b-mcp-auth0: PASS=3 FAIL=0

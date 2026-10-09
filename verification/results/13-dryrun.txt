@@ -1,0 +1,13 @@
+SCHEMA-FAIL README: Gateway-mediated Variant B (backend.tokenExchange.entra) :: The EnterpriseAgentgatewayPolicy "dry-entra" is invalid: 
+SCHEMA-OK   Current: backend.entTokenExchange.entra
+SCHEMA-OK   README: Gateway-Brokered DCR Auth0 policy (mcp.authentication on AgentgatewayBackend target)
+SCHEMA-OK   README: Double OAuth (tokenExchange.elicitation clientName+secretName)
+SCHEMA-OK   README: Eager Upstream Variant 1 (ElicitationOnly + elicitation.secretName on AgentgatewayBackend)
+SCHEMA-OK   README: Eager Upstream MCP backend wiring (AgentgatewayBackend policies.tls + policies.mcp.authentication)
+SCHEMA-OK   README: Elicitation (ElicitationOnly + clientName/secretName on HTTPRoute)
+SCHEMA-OK   Current: entElicitation.interactive
+SCHEMA-OK   Current: entElicitation.brokered.chainedAuth (DCR via baseUrl)
+SCHEMA-OK   README: Eager Upstream Helm-era STS_URI env on EnterpriseAgentgatewayParameters
+SCHEMA-OK   README: OBO Delegation policy (jwtAuthentication + tokenExchange ExchangeOnly on HTTPRoute)
+SCHEMA-OK   README: standalone-binary jwks.url inside K8s mcpAuthentication (not applicable) - skip
+== 13-dryrun: PASS=0 FAIL=0

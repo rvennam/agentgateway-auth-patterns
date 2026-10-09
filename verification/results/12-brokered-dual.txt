@@ -1,0 +1,26 @@
+policy status: Policy accepted Attached to all targets
+PASS [401] dual: no token -> 401
+-- [static-client] /authorize -> http://136.119.100.44:8080/keycloak/realms/authtest/protocol/openid-connect/auth?client_id=agw&code_
+-- [static-client] hop1: 307 http://136.119.100.44:8080/oauth-issuer/consent?state=ATxwnBrzXpVOFC-FGDgUsAgn6Saq9u8Bbf1TV0Yr2OM%3D
+-- [static-client] hop2: 200 
+-- [static-client] consent page: action=http://136.119.100.44:8080/oauth-issuer/consent?state=ATxwnBrzXpVOFC-FGDgUsAgn6Saq9u8Bbf1TV0Yr2OM%3D hidden=[state=ATxwnBrzXpVOFC-FGDgUsAgn6Saq9u8Bbf1TV0Yr2OM=] buttons=[decision=allow ]
+-- [static-client] consent POST -> http://136.119.100.44:8080/keycloak/realms/upstream/protocol/openid-connect/auth?client_id=agw&redirect_uri=ht
+-- [static-client] hop3: 200 
+-- [static-client] upstream login POST -> http://136.119.100.44:8080/oauth-issuer/callback/upstream?state=ATxwnBrzXpVOFC-FGDgUsAgn6Saq9u8Bbf1TV0Yr2OM%3D
+-- [static-client] hop4: 302 http://localhost:6274/oauth/callback?code=OAN6MHSMEO24z2KgXl6ukytQ6N9_Cws9A5nb_DQneiI%3D&iss=http%3A%2F%2F136.
+PASS [static-client] dual-OAuth flow completed; downstream token iss=http://136.119.100.44:8080/keycloak/realms/authtest
+-- [static-client] mcp session: eyJ0IjoibWNw...
+FAIL [static-client] upstream header: event: message
+data: {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\"host\": \"mcp-echo.authtest.svc.cluster.local\"}"}]}}
+policy status (DCR variant): Policy accepted Attached to all targets
+-- [dcr-baseUrl] /authorize -> http://136.119.100.44:8080/keycloak/realms/authtest/protocol/openid-connect/auth?client_id=agw&code_
+-- [dcr-baseUrl] hop1: 307 http://136.119.100.44:8080/keycloak/realms/upstream/protocol/openid-connect/auth?client_id=e7efa496-a1bc-419d-
+-- [dcr-baseUrl] hop2: 200 
+-- [dcr-baseUrl] upstream login POST -> http://136.119.100.44:8080/oauth-issuer/callback/upstream?state=jShdeQMb73C_wmFiOusfh85QRMC6nMDzfAwdvxWO6z4%3D
+-- [dcr-baseUrl] hop3: 302 http://localhost:6274/oauth/callback?code=6FzMSFIGyQOVxVo44xZ7_F76kXcfBawbqIkANTF4LPg%3D&iss=http%3A%2F%2F136.
+PASS [dcr-baseUrl] dual-OAuth flow completed; downstream token iss=http://136.119.100.44:8080/keycloak/realms/authtest
+-- [dcr-baseUrl] mcp session: eyJ0IjoibWNw...
+FAIL [dcr-baseUrl] upstream header: event: message
+data: {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\"host\": \"mcp-echo.authtest.svc.cluster.local\"}"}]}}
+-- controller issuer log tail: {"time":"2026-10-09T01:20:16.851346539Z","level":"info","msg":"authorization server metadata discovery attempt failed","component":"tokenexchange","discovery_url":"http://136.119.100.44:8080/.well-known/oauth-authorization-server/keycloak/realms/upst
+== 12-brokered-dual: PASS=3 FAIL=2

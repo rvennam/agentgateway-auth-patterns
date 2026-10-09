@@ -1,0 +1,5 @@
+callback: HTTP/1.1 302 Found; cookies: keycloak-session
+replay with Cookie header: 200
+-- ext-auth log around replay: {"level":"info","ts":"2026-10-09T01:32:14Z","logger":"ext-auth.ext-auth-service","msg":"received callback request","version":"0.86.5","client_id":"agw"}
+PASS OIDC session replay -> 200; backend headers: ["Accept","Cookie","Host","Jwt","User-Agent"]
+== 10c-oidc: PASS=1 FAIL=0

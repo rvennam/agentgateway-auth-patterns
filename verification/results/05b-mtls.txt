@@ -1,0 +1,12 @@
+gateway listeners: [{"name":"http","bad":["Conflicted"]},{"name":"https","bad":["Conflicted"]}]
+PASS [000] mTLS: no client cert -> handshake failure
+FAIL [got 000 want 200] mTLS: valid client cert -> 200 :: {   "headers": {     "Accept": [       "*/*"     ],     "Host": [       "136.119.100.44:8080"     ],     "User-Agent": [       "curl/8.7.1"     ]   } } 
+PASS [000] mTLS: untrusted-CA client cert -> failure
+-- backend sees with mTLS: {}
+-- server cert presented: subject=CN=authtest-gw
+PASS [200] http:8080 unaffected -> 200
+PASS [200] AllowInsecureFallback: no client cert -> 200
+PASS [200] AllowInsecureFallback: valid client cert -> 200
+PASS [200] BackendTLS system roots (tls: {}) to httpbin.org -> 200
+-- httpbin.org saw url: https://httpbin.org/get
+== 05b-mtls: PASS=6 FAIL=1

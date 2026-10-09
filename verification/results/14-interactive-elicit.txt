@@ -1,0 +1,43 @@
+README legacy secret (client-id/client-secret keys): http=200 body={
+  "headers": {
+    "Accept": [
+      "*/*"
+    ],
+    "Host": [
+      "httpbin.authtest.svc.cluster.local"
+    ],
+    "User-Agent": [
+      "curl/8.7.1"
+    ]
+  }
+}
+legacy opaque secret format: http=200 body={
+  "headers": {
+    "Accept": [
+      "*/*"
+    ],
+    "Host": [
+      "httpbin.authtest.svc.cluster.local"
+    ],
+    "User-Agent": [
+      "curl/8.7.1"
+    ]
+  }
+}
+FAIL expected 500+url
+entElicitation.interactive: http=200 body={
+  "headers": {
+    "Accept": [
+      "*/*"
+    ],
+    "Host": [
+      "httpbin.authtest.svc.cluster.local"
+    ],
+    "User-Agent": [
+      "curl/8.7.1"
+    ]
+  }
+}
+FAIL expected 500+url
+-- STS elicitation list (k8s api token): 
+== 14-interactive-elicit: PASS=0 FAIL=2

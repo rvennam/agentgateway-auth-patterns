@@ -1,0 +1,15 @@
+README path:"/check" status: 
+PASS [403] README http shape: no token
+FAIL [got 403 want 200] README http shape: with x-ext-token :: external authorization failed
+WARN policy agentgatewaypolicy/ext-auth-http not Accepted: 
+PASS [403] http CEL path: no token -> 403
+FAIL [got 403 want 200] http CEL path: Authorization: Bearer letmein -> 200 :: denied
+PASS [200] http CEL path: x-ext-token (allowedRequestHeaders) -> 200
+-- backend sees injected headers: {"Authorization":["Bearer from-ext-authz"],"X-Ext-Token":["letmein"],"X-Ext-User":["alice@ext"]}
+README grpc.context apply rc=1 ; status: 
+WARN policy agentgatewaypolicy/ext-auth-grpc not Accepted: 
+PASS [403] grpc: no header -> 403
+PASS [200] grpc: x-ext-authz: allow -> 200
+PASS [403] grpc: x-ext-authz: deny -> 403
+-- backend sees: {"X-Ext-Authz":["allow"],"X-Ext-Authz-Check-Reason":["header x-ext-authz=allow present"],"X-Ext-Authz-Check-Result":["allowed"]}
+== 03-extauth: PASS=6 FAIL=2

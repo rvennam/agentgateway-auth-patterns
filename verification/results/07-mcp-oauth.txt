@@ -1,0 +1,29 @@
+PASS [200] no policy: MCP initialize -> 200
+README backend.mcpAuthentication: Error from server (BadRequest): error when creating "STDIN": AgentgatewayPolicy in version "v1alpha1" cannot be handled as a AgentgatewayPolicy: strict decoding error: unknown field "spec.backend.mcpAuthentication"
+PASS [401] backend.mcp.authentication: MCP initialize w/o token -> 401
+-- 401 WWW-Authenticate: www-authenticate: Bearer resource_metadata="http://136.119.100.44:8080/.well-known/oauth-protected-resource/mcp"
+-- protected-resource: {"resource":"http://136.119.100.44:8080/mcp","authorization_servers":["http://136.119.100.44:8080/mcp"],"mcp_protocol_version":"2025-06-18","resource_type":"mcp-server","bearer_methods_supported":["header"],"scopes_supported":["openid","profile","offline_access"]}
+-- auth-server metadata: {"issuer":"http://136.119.100.44:8080/mcp","authorization_endpoint":"http://136.119.100.44:8080/keycloak/realms/authtest/protocol/openid-connect/auth","token_endpoint":"http://136.119.100.44:8080/keycloak/realms/authtest/protocol/openid-connect/token","registration_endpoint":"http://136.119.100.44:8080/.well-known/oauth-authorization-server/mcp/client-registration","code_challenge_methods_supported":["plain","S256"]}
+-- DCR at http://136.119.100.44:8080/.well-known/oauth-authorization-server/mcp/client-registration -> client_id=a953611a-6a5b-41d9-8c95-1cba5c91c85d {"client_name":"authtest-mcp-client","token_endpoint_auth_method":"none","error":null,"error_description":null}
+PASS DCR returned client_id
+-- login form action: http://136.119.100.44:8080/keycloak/realms/authtest/login-actions/authenticate?s...
+-- redirect: http://localhost:6274/oauth/callback?state=xyz&session_state... code_len=98
+-- token resp: {"token_type":"Bearer","scope":"openid authtest email profile","error":null,"error_description":null}
+PASS auth-code+PKCE via DCR client got access_token; claims={"iss":"http://136.119.100.44:8080/keycloak/realms/authtest","aud":["authtest-mcp","account"],"azp":"a953611a-6a5b-41d9-8c95-1cba5c91c85d","sub":"f5c83254-8d08-415f-91a3-5bf3de16df51","preferred_username":"alice"}
+PASS [200] backend.mcp.authentication: MCP initialize with DCR-client token -> 200
+PASS [401] backend.mcp.authentication: MCP initialize with wrong-aud local token -> 401
+-- tools/list (first): 
+PASS [401] traffic.jwtAuthentication.mcp: MCP initialize w/o token -> 401
+-- 401 WWW-Authenticate: www-authenticate: Bearer resource_metadata="http://136.119.100.44:8080/.well-known/oauth-protected-resource/mcp"
+-- protected-resource: {"resource":"http://136.119.100.44:8080/mcp","authorization_servers":["http://136.119.100.44:8080/mcp"],"mcp_protocol_version":"2025-06-18","resource_type":"mcp-server","bearer_methods_supported":["header"],"scopes_supported":["openid","profile","offline_access"]}
+-- auth-server metadata: {"issuer":"http://136.119.100.44:8080/mcp","authorization_endpoint":"http://136.119.100.44:8080/keycloak/realms/authtest/protocol/openid-connect/auth","token_endpoint":"http://136.119.100.44:8080/keycloak/realms/authtest/protocol/openid-connect/token","registration_endpoint":"http://136.119.100.44:8080/.well-known/oauth-authorization-server/mcp/client-registration","code_challenge_methods_supported":["plain","S256"]}
+-- DCR at http://136.119.100.44:8080/.well-known/oauth-authorization-server/mcp/client-registration -> client_id=ebf3e71f-e26a-4e64-bfed-9ee5a999a9a1 {"client_name":"authtest-mcp-client","token_endpoint_auth_method":"none","error":null,"error_description":null}
+PASS DCR returned client_id
+-- login form action: http://136.119.100.44:8080/keycloak/realms/authtest/login-actions/authenticate?s...
+-- redirect: http://localhost:6274/oauth/callback?state=xyz&session_state... code_len=98
+-- token resp: {"token_type":"Bearer","scope":"openid authtest email profile","error":null,"error_description":null}
+PASS auth-code+PKCE via DCR client got access_token; claims={"iss":"http://136.119.100.44:8080/keycloak/realms/authtest","aud":["authtest-mcp","account"],"azp":"ebf3e71f-e26a-4e64-bfed-9ee5a999a9a1","sub":"f5c83254-8d08-415f-91a3-5bf3de16df51","preferred_username":"alice"}
+PASS [200] traffic.jwtAuthentication.mcp: MCP initialize with DCR-client token -> 200
+PASS [401] traffic.jwtAuthentication.mcp: MCP initialize with wrong-aud local token -> 401
+-- tools/list (first): 
+== 07-mcp-oauth: PASS=11 FAIL=0

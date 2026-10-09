@@ -1,0 +1,22 @@
+STS_URI now: http://enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777/elicitations/oauth2/token
+FAIL ExchangeOnly regression: invalid request
+legacy ElicitationOnly: http=500 body={"url":"https://example.com/elicitation","status_url":null}
+PASS interactive elicitation PENDING url returned
+entElicitation.interactive: http=200 body={
+  "headers": {
+    "Accept": [
+      "*/*"
+    ],
+    "Host": [
+      "httpbin.authtest.svc.cluster.local"
+    ],
+    "User-Agent": [
+      "curl/8.7.1"
+    ]
+  }
+}
+FAIL expected 500+url
+-- proxy log: 2026-10-09T01:23:35.191127Z	error	proxy::token_exchange	Token exchange failed: OAuthErrorResponse { error: "elicitation_pending", error_description: Some("elicitation pending"), error_uri: None, elicitation_info: Some(ElicitationInfo { url: Some("https://example.com/elicitation"), status_url: None }
+2026-10-09T01:23:35.191470Z	error	request gateway=authtest/authtest-gw listener=http route=authtest/r-elicit src.addr=10.128.0.121:21591 http.method=GET http.host=136.119.100.44 http.path=/elicit/headers http.version=HTTP/1.1 http.status=500 jwt.sub=alice protocol=http error="request needs a token e
+2026-10-09T01:23:44.989139Z	info	request gateway=authtest/authtest-gw listener=http route=authtest/r-elicit endpoint=httpbin.authtest.svc.cluster.local:8080 src.addr=10.128.0.121:14682 http.method=GET http.host=136.119.100.44 http.path=/elicit/headers http.version=HTTP/1.1 http.status=200 jwt.sub=al
+== 15-sts-uri-elicit: PASS=1 FAIL=2

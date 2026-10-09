@@ -1,0 +1,20 @@
+policy status: Policy accepted Attached to all targets
+PASS [401] inline ExchangeOnly (HTTPRoute target): no token -> 401
+PASS inline exchange: backend got STS-issued token; claims={"exp":1791512150,"iat":1791508550,"iss":"enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777","nbf":1791508550,"scope":"mcp:invoke","sub":"alice"}
+-- proxy log tail (token exchange): 
+PASS inline exchange (Backend target): claims={"exp":1791512161,"iat":1791508561,"iss":"enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777","nbf":1791508561,"scope":"mcp:invoke","sub":"alice"}
+oss oauthTokenExchange status: 
+FAIL OSS oauthTokenExchange: {
+  "headers": {
+    "Accept": [
+      "*/*"
+    ],
+    "Host": [
+      "httpbin.authtest.svc.cluster.local"
+    ],
+    "User-Agent": [
+      "curl/8.7.1"
+    ],
+    "X-Actor-Token": [
+      "eyJhbGciOiJSUzI1NiIsImtpZCI6Inpub0pQYlhwVmMya1ltNUFBUk5zMUxubDFZOFFwQXV1cFZCQjRYMDZlaEEifQ.eyJhdWQiOlsiaHR0c
+== 09-inline-exchange: PASS=3 FAIL=1

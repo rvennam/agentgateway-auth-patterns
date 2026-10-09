@@ -1,0 +1,16 @@
+policy: Policy accepted Attached to all targets
+entElicitation.interactive + entTokenExchange.solo.elicitation: http=400 body={"url":"https://example.com/elicitation"}
+PASS typed interactive elicitation PENDING url (http 400)
+dual policy: Policy accepted Attached to all targets
+-- hop1: 307 http://136.119.100.44:8080/keycloak/realms/upstream/protocol/openid-connect/auth?client_id
+-- hop2: 200 
+-- upstream login -> http://136.119.100.44:8080/oauth-issuer/callback/upstream?state=eGAGgqMjyiR1ixP7xlP4Xp-fIX
+-- hop3: 302 http://localhost:6274/oauth/callback?code=dNj4TqcM9dA3YnmyTZfSdKWWJXcDNmGMFpjGT5tWLgY%3D&i
+-- initialize: HTTP/1.1 200 OK event: message
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"mcp-echo","ver
+-- MCP server saw: {"authorization": "Bearer eyJhbGciOiJSUzI1NiIsInR5cCIgOiAiSldUIiwia2lkIiA6ICJfNjhfNFFwQlRUVk5DTmZUZ3BoUHBnN1FjNWZ4WDlWZVc5Ujc4NUV1WDBBIn0.eyJleHAiOjE3OTE1MTMyNDksImlhdCI6MTc5MTUwOTY0OSwiYXV0aF90aW1lIj
+PASS dual OAuth: upstream token injected; iss=http://136.119.100.44:8080/keycloak/realms/upstream user=alice azp=agw
+-- proxy log: 2026-10-09T01:33:15.043115Z	warn	http::auth::oauth:xds{id=1}	oauth token exchange resource is not an absolute URI without a fragment; future OAuth 2.1 compliance enforcement may reject it	resource="authtest/mcp-dual"
+2026-10-09T01:33:15.044417Z	warn	http::auth::oauth:xds{id=1}	oauth token exchange resource is not an absolute URI without a fragment; future OAuth 2.1 compliance enforcement may reject it	resource="authtest/httpbin-elicit"
+2026-10-09T01:33:58.487244Z	error	request gateway=authtest/authtest-gw listener=http route=authtest/r-elicit src.addr=10.128.15.193:33363 http.method=GET http.host=136.119.100.44 http.path=/elicit/headers http.version=HTTP/1.1 http.status=400 jwt.sub=alice protocol=http error="request needs an elici
+== 16-typed-elicit: PASS=2 FAIL=0

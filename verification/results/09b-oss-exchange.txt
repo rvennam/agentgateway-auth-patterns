@@ -1,0 +1,4 @@
+FAIL: backend authentication failed: token exchange returned unsupported token_type: N_A
+PASS [403] OSS exchange: actor not in may_act -> error
+-- actual status for may_act mismatch: 403 authorization failed
+== 09b-oss-exchange: PASS=1 FAIL=1

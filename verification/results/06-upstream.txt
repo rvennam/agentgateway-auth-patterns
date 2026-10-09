@@ -1,0 +1,14 @@
+-- JWT auth alone, backend Authorization: null
+PASS [body~/Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6ImF1dGh0ZXN0IiwidHlwIjoiSldUIn0.eyJpc3MiOiJodHRwczovL2F1dGh0ZXN0LmV4YW1wbGUiLCJhdWQiOiJhdXRodGVzdCIsImlhdCI6MTc5MTUwODA0NywiZXhwIjoxNzkxNTExNjQ3LCJzdWIiOiJhbGljZSIsInRpZXIiOiJwYWlkIn0.QrCpjN9yxOsuWKfDUMgbZLemWQz3D-QqVUKXVmHbWBxqn8S-DdCBGfqReY4pg-xZf4BuguSGxBYayvAwikAmPXyj5Mz-RAvNc6n3z0XBizE3rdAhxS-EPUBhJbhK4LYTnsa5yjAQaEoztZYp8w8QixWAbzII5ttjZfjRgSt4jSZufqpiKvf93egAVEEmYjscgoXGdqqZVuOlu34orsUqxi1YQ6FeAYwflFMQkIFl4akHKN8-97PKkiNQido70foB4S3FNyvMy1KF0apFR0APW1lLZHyYspmptvoly6S4ueteZNvR8O_qNsKyYkmtfo-B1ckxyqcpa-45N5qElMCMHg/] passthrough: original JWT reaches backend
+PASS [401] passthrough: no token still 401 at gateway
+PASS [body~/Bearer ghp_SHARED_UPSTREAM_TOKEN/] static secretRef: backend gets shared token
+FAIL [body !~ /^((?!authtest).)*$/] static secretRef: user JWT NOT forwarded :: {   "headers": {     "Accept": [       "*/*"     ],     "Authorization": [       "Bearer ghp_SHARED_UPSTREAM_TOKEN"     ],     "Host": [       "136.119.100.44:8080"     ],     "User-Agent": [       "curl/8.7.1"     ]   } } 
+PASS [body~/Bearer sk-INLINE-KEY/] static inline key: backend gets inline key
+FAIL [body !~ /"X-Api-Key":\["k-upstream-123"\]/] static secretRef.key + location x-api-key :: {   "headers": {     "Accept": [       "*/*"     ],     "Host": [       "136.119.100.44:8080"     ],     "User-Agent": [       "curl/8.7.1"     ],     "X-Api-Key": [       "k-upstream-123"     ]   } } 
+README set[].expression: Error from server (BadRequest): error when creating "STDIN": AgentgatewayPolicy in version "v1alpha1" cannot be handled as a AgentgatewayPolicy: strict decoding error: unknown field "spec.traffic.tran
+PASS [body~/Bearer PAID-KEY/] claim map: tier=paid -> PAID-KEY
+PASS [body~/Bearer FREE-KEY/] claim map: tier=free -> FREE-KEY
+PASS [body~/Bearer INTERNAL-KEY/] claim map: tier=internal -> INTERNAL-KEY
+PASS [200] claim map: no tier claim -> ?
+-- no tier claim result: null
+== 06-upstream: PASS=8 FAIL=2

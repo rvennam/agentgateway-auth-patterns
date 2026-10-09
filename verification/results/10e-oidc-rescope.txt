@@ -1,0 +1,4 @@
+after OIDC login: http=200 headers=["Accept","Authorization","Cookie","Host","Jwt","User-Agent"]
+PASS gateway-mediated OIDC + exchange (accessTokenHeader -> oauthTokenExchange): backend sees STS token; claims={"aud":"my-agent","exp":1791514679,"iat":1791511079,"iss":"enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777","nbf":1791511079,"scope":"openid authtest email profile","sub":"f5c83254-8d08-415f-91a3-5bf3de16df51"}
+-- user access token also forwarded? x-user-access-token present: false
+== 10e-oidc-rescope: PASS=1 FAIL=0

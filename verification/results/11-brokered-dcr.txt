@@ -1,0 +1,18 @@
+backend status: Backend successfully accepted
+PASS [401] brokered: no token -> 401
+-- issuer metadata direct: {"issuer":"http://136.119.100.44:8080/oauth-issuer","authorization_endpoint":"http://136.119.100.44:8080/oauth-issuer/authorize","token_endpoint":"http://136.119.100.44:8080/oauth-issuer/token","registration_endpoint":"http://136.119.100.44:8080/oauth-issuer/register"}
+-- protected-resource: {"resource":"http://136.119.100.44:8080/mcp-brokered","authorization_servers":["http://136.119.100.44:8080/mcp-brokered"],"mcp_protocol_version":"2025-06-18","resource_type":"mcp-server"}
+-- AS metadata (should point at gateway /oauth-issuer): {"issuer":"http://136.119.100.44:8080/mcp-brokered","authorization_endpoint":"http://136.119.100.44:8080/oauth-issuer/authorize","token_endpoint":"http://136.119.100.44:8080/oauth-issuer/token","registration_endpoint":"http://136.119.100.44:8080/oauth-issuer/register"}
+PASS registration_endpoint rewritten to gateway issuer
+-- gateway-brokered DCR -> {"client_id":"agw","client_secret":"null","error":null,"error_description":null}
+PASS /register returned the pre-registered client_id (agw)
+-- DCR with unlisted redirect_uri: {"client_id":null,"error":"invalid_redirect_uri"}
+-- issuer /authorize: 302 http://136.119.100.44:8080/keycloak/realms/authtest/protocol/openid-connect/auth?client_id=agw&code_challenge=Cd8CVr
+-- keycloak -> http://136.119.100.44:8080/oauth-issuer/callback/downstream?state=YwpGOZDVz3I3U9ijs0Nx6EzU
+-- hop1: 307 http://localhost:6274/oauth/callback?code=qWHGThXsiUr4wHBbE9xw-fBW8gST9f7tUq1pkAm_5rg%3D&iss=http%3A
+-- token: {"token_type":"Bearer","expires_in":3600,"error":null,"error_description":null}
+PASS gateway-issuer auth-code flow -> token; claims={"iss":"http://136.119.100.44:8080/keycloak/realms/authtest","aud":["authtest-mcp","account"],"azp":"agw","sub":"f5c83254-8d08-415f-91a3-5bf3de16df51","preferred_username":"alice"}
+FAIL [got 401 want 200] brokered: MCP initialize with issued token -> 200 :: {"error":"unauthorized","error_description":"JWT token required"}
+-- upstream MCP server saw headers: null
+== 11-brokered-dcr: PASS=4 FAIL=1
+token aud=authtest-mcp via agw client is accepted -> brokered downstream-only OK

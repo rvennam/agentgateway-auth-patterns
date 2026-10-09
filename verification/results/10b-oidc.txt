@@ -1,0 +1,6 @@
+cookies set by callback: keycloak-session (flags: HttpOnly; Secure)
+PASS OIDC session -> 200 (README single policy entExtAuth+ExchangeOnly active); backend headers: ["Accept","Cookie","Host","Jwt","User-Agent"]
+-- idTokenHeader 'jwt' claims: {"iss":"http://136.119.100.44:8080/keycloak/realms/authtest","aud":"agw","sub":"f5c83254-8d08-415f-91a3-5bf3de16df51","preferred_username":"alice"}
+FAIL no STS token at backend
+-- OIDC only (no exchange): backend headers: {"Jwt":"eyJhbGciOiJSUzI1NiIsInR5cCIgOiAiSldUIiwi"}
+== 10b-oidc: PASS=1 FAIL=1

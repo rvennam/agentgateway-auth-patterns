@@ -1,0 +1,6 @@
+PASS [200] strict mTLS: valid client cert -> 200
+-- no cert curl error: 
+PASS [000] strict mTLS: no client cert -> fail
+PASS [000] strict mTLS: untrusted CA client cert -> fail
+-- backend headers with mTLS: ["Accept","Host","User-Agent"]
+== 05c-mtls-strict: PASS=3 FAIL=0

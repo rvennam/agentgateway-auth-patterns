@@ -1,0 +1,18 @@
+WARN policy agentgatewaypolicy/api-key-auth not Accepted: 
+PASS [401] no key -> 401
+PASS [401] bad key (Bearer) -> 401
+PASS [401] README diagram: x-api-key header (default location is Authorization Bearer) 
+PASS [200] JSON-form key via Authorization Bearer -> 200
+PASS [200] bare-string key via Authorization Bearer -> 200
+-- headers seen by backend with alice key:
+{"User-Agent":["curl/8.7.1"]}
+WARN policy agentgatewaypolicy/api-key-auth not Accepted: 
+PASS [200] x-api-key alice (tier=paid) -> 200
+PASS [403] x-api-key ci (tier=internal) -> 403 by CEL
+PASS [403] x-api-key bob (no metadata) -> 403 by CEL
+PASS [401] Bearer alice when location=x-api-key -> 401
+WARN policy agentgatewaypolicy/api-key-auth not Accepted: 
+PASS [200] secretRef + Optional: no key -> 200
+PASS [401] secretRef + Optional: bad key -> 401
+PASS [200] secretRef + Optional: good key -> 200
+== 01-apikey: PASS=12 FAIL=0

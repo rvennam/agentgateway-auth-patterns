@@ -1,0 +1,14 @@
+pods: agw-waypoint-6b69648d5c-sc55v:1/1 customer-agent-5d6f6585b-sfxw4:1/1 inventory-mcp-7b8b749c5b-nt2wg:1/1 rogue-agent-6ff55bd4b8-dv8z8:1/1
+baseline (no waypoint): customer=200 rogue=403
+via waypoint: customer=200 rogue=403
+-- waypoint log: src.identity=spiffe://cluster.local/ns/authtest-mesh/sa/customer-agent http.status=200 src.identity=spiffe://cluster.local/ns/authtest-mesh/sa/rogue-agent http.status=403
+authz: customer=200 rogue=403
+PASS W1 SPIFFE identity authz (allow customer-agent, deny rogue-agent)
+-- backend headers: {"X-Caller-Sa":["customer-agent"],"X-Caller-Spiffe":["cluster.local/ns/authtest-mesh/sa/customer-agent"]}
+PASS W2 caller SPIFFE identity propagated as header
+customer-agent -> OpenAI via waypoint (no key in pod): http=200 content=Pong
+PASS W3 LLM egress with waypoint-injected API key
+rogue-agent -> OpenAI via waypoint: http=403
+PASS W3 rogue agent blocked by identity authz before egress
+-- waypoint access log (llm): gen_ai.operation.name=chat gen_ai.provider.name=openai gen_ai.request.model=gpt-4o-mini gen_ai.response.model=gpt-4o-mini-2024-07-18 gen_ai.usage.input_tokens=14 gen_ai.usage.cache_read.input_tokens=0 gen_ai.usage.output_tokens=2 gen_ai.usage.reasoning_tokens=0 gen_ai.usage.input_audio_tokens=0 gen_
+== 20-waypoint: PASS=4 FAIL=0

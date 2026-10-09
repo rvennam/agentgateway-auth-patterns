@@ -1,0 +1,6 @@
+accessTokenHeader=authorization, no jwtAuthentication: http=400 Authorization iss=
+with jwtAuthentication(Optional) + ExchangeOnly: http=400 body=invalid request 
+FAIL (iss=)
+-- proxy log: 2026-10-09T01:35:24.501758Z	error	request gateway=authtest/authtest-gw listener=http route=authtest/r-oidc src.addr=10.128.0.121:65498 http.method=GET http.host=136.119.100.44 http.path=/oidc/headers http.version=HTTP/1.1 http.status=400 protocol=http error="invalid request" reason=Internal duration
+2026-10-09T01:35:24.642765Z	error	request gateway=authtest/authtest-gw listener=http route=authtest/r-oidc src.addr=10.28.0.1:49052 http.method=GET http.host=136.119.100.44 http.path=/oidc/headers http.version=HTTP/1.1 http.status=400 protocol=http error="invalid request" reason=Internal duration=2m
+== 10d-oidc-exchange: PASS=0 FAIL=1
