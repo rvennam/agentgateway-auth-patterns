@@ -51,6 +51,6 @@ python3 -I tests/keycloak-setup.py
 ./tests/01-apikey.sh      # etc.
 ```
 
-Each script applies its own policies, so run them one at a time. Expect a handful of `FAIL` lines
-that are deliberate — several scripts first apply the *old* README YAML to prove the breakage
-(unknown field, wrong Secret key, CEL path literal) before applying the corrected shape.
+Each script applies its own policies, so run them one at a time. A few `FAIL` lines are expected and
+deliberate: several scripts first apply an earlier draft of the README YAML to confirm which field
+names the current API accepts before applying the shape now shown in the README.

@@ -8,7 +8,7 @@ A practical guide to the authentication patterns supported by agentgateway. Each
 
 > **Documentation:** [docs.solo.io/agentgateway/latest](https://docs.solo.io/agentgateway/latest/) · [Enterprise API](https://docs.solo.io/agentgateway/latest/reference/api/solo/) · [OSS API](https://docs.solo.io/agentgateway/latest/reference/api/api/) · [Helm Values](https://docs.solo.io/agentgateway/latest/reference/helm/agentgateway/)
 
-> **Verified on a live cluster (2026-10-08):** every YAML in this guide was applied to Solo Enterprise for agentgateway **v2026.9.3** (enterprise-agentgateway Helm chart, Gateway API v1.5.0 standard, Solo Istio 1.31 ambient for the waypoint patterns) and exercised end to end with Keycloak as the IdP. Where the API changed since the guide was first written, the YAML below is the shape that works today and a **"Tested"** note calls out what was observed. Patterns that need credentials we did not have (Okta, Microsoft Entra, GitHub OAuth apps) were validated against the installed CRD schema only and are marked as such.
+> **Verified on v2026.9.3 (October 2026):** the YAML in this guide was applied to Solo Enterprise for agentgateway **v2026.9.3** (Gateway API v1.5.0, Solo Istio 1.31 ambient for the waypoint patterns) and exercised end to end with Keycloak as the IdP. Each pattern carries a short **Verified** note with the behavior you should expect and the configuration details that matter. Okta, Microsoft Entra, and GitHub-OAuth-app variants were validated against the API schema rather than run live.
 
 ---
 
@@ -195,11 +195,11 @@ Clients authenticate with a static API key stored in a Kubernetes Secret. The `a
 
 > **Heads up:** there is no inline-keys mode in the current API — keys must live in a Kubernetes Secret (or a ConfigMap holding `keyHash` entries). Each top-level `stringData` entry in the Secret is one key. Use the JSON-object form to attach metadata (or to store a `sha256:<hex>` `keyHash` instead of the raw key); use the bare-string form for keys without metadata.
 
-> **Where the key is read from:** by default the gateway reads the key from `Authorization: Bearer <key>`, **not** from `x-api-key`. To accept a custom header, set `location.header.name` (see the policy below). The key is consumed by the gateway and is not forwarded to the backend, and no `x-user-id` header is added — use the metadata in CEL (`apiKey.tier`, `apiKey.user`) or a `transformation` if the backend needs identity.
+> **Where the key is read from:** by default the gateway reads the key from `Authorization: Bearer <key>`. To accept a custom header such as `x-api-key`, set `location.header.name` (see the policy below). The key is consumed by the gateway and not forwarded to the backend; the per-key metadata is available to CEL (`apiKey.tier`, `apiKey.user`) and can be stamped into headers with a `transformation` if the backend needs identity.
 
 **Modes:** `Strict` (require a valid key) or `Optional` (validate if present, allow if not).
 
-> **Tested (v2026.9.3):** `secretSelector`, `secretRef`, JSON and bare-string keys, `Optional` mode, `location.header` override, and CEL on `apiKey.tier` all behave as documented below.
+> **Verified (v2026.9.3):** `secretSelector`, `secretRef`, JSON and bare-string keys, `Optional` mode, the `location.header` override, and CEL on `apiKey.tier` behave as shown below.
 
 **Trade-offs:** Simple to roll out. No native expiry — pair with rate limiting and audit logging. **Do not use for end-user (human) traffic** — see [API Keys Are a Bad Idea for Enterprise LLM, Agent, and MCP Access (Christian Posta)](https://blog.christianposta.com/api-keys-are-a-bad-idea-for-enterprise-llm-agent-and-mcp-access/) — keys prove possession, not legitimacy, and broad-permission keys held by an autonomous agent will eventually be misused.
 
@@ -296,7 +296,7 @@ Clients send `Authorization: Basic <base64(user:pass)>`. The gateway validates a
 
 **Modes:** `Strict` (require credentials) or `Optional` (validate if present).
 
-> **Tested (v2026.9.3):** inline `users` with both `$apr1$` and `$2y$` (bcrypt) hashes work; failed auth returns `401` with `WWW-Authenticate: Basic realm="agentgateway"`. For `secretRef`, the gateway reads the Secret key **`.htaccess`** by default — a Secret with a key named `htpasswd` fails with `invalid credentials` unless you also set `secretRef.key: htpasswd`. The username is not forwarded to the backend.
+> **Verified (v2026.9.3):** inline `users` with `$apr1$` and `$2y$` (bcrypt) hashes both work; a failed login returns `401` with `WWW-Authenticate: Basic realm="agentgateway"`. For `secretRef`, the gateway reads the Secret key **`.htaccess`** by default; set `secretRef.key` if your Secret uses a different key name. The username is not forwarded to the backend.
 
 ### YAML — inline `users` list
 
@@ -408,8 +408,7 @@ spec:
         port: 80
       failureMode: FailClosed   # FailClosed | FailOpen
       http:
-        # `path` is a CEL *expression*, so a fixed path needs quotes inside the string.
-        # A bare "/check" is an invalid expression and fails closed with 403.
+        # `path` is a CEL *expression*, so a fixed path is a quoted string literal.
         path: '"/check"'
         # Defaults to [Authorization] when unset. Setting it REPLACES the default,
         # so list Authorization again if your auth service needs it.
@@ -437,7 +436,7 @@ spec:
           environment: prod
 ```
 
-> **Tested (v2026.9.3):** both modes work. Gotchas that bit the original YAML: `http.path` is CEL (`'"/check"'`), `allowedRequestHeaders` overrides the default `Authorization` passthrough, and the gRPC field is `contextExtensions` (`grpc.context` is rejected as an unknown field). Headers returned by the auth service (for example `Authorization: Bearer <minted>` or `x-ext-user`) show up on the backend request when listed in `allowedResponseHeaders`.
+> **Verified (v2026.9.3):** both modes work. Three details to get right: `http.path` is a CEL expression (`'"/check"'`), `allowedRequestHeaders` replaces the default list (so include `Authorization` if your service needs it), and the gRPC field is `grpc.contextExtensions`. Headers returned by the auth service (for example `Authorization: Bearer <minted>` or `x-ext-user`) are copied onto the backend request when listed in `allowedResponseHeaders`.
 
 > **Docs:** [BYO Ext Auth Service](https://docs.solo.io/agentgateway/latest/security/extauth/byo-ext-auth-service/)
 > **API:** [ExtAuth (OSS)](https://docs.solo.io/agentgateway/latest/reference/api/api/#extauth) · [EnterpriseAgentgatewayExtAuth](https://docs.solo.io/agentgateway/latest/reference/api/solo/#enterpriseagentgatewayextauth)
@@ -480,7 +479,7 @@ The client obtains a JWT from an external OIDC provider (e.g., via Authorization
 
 **Modes:** `Strict` (require valid JWT), `Optional` (validate if present), `Permissive` (never reject).
 
-> **Tested (v2026.9.3):** both YAMLs below work as written against Keycloak (remote JWKS via `backendRef` + `jwksPath`, and `jwks.remote.url` as a shortcut) and a locally minted inline JWKS; multi-provider, `audiences`, `exp`, and CEL `authorization` on `jwt.*` all enforce as expected. Two things to know: the validated JWT is **stripped** from the request by default (set `preserveToken: true` or use [Passthrough](#passthrough-token-oss) to forward it), and `jwtAuthentication.mcp` is now where MCP OAuth metadata handling lives (see [MCP OAuth + DCR](#mcp-oauth-with-dynamic-client-registration-oss)).
+> **Verified (v2026.9.3):** both YAMLs below work as written against Keycloak (remote JWKS via `backendRef` + `jwksPath`, or `jwks.remote.url` as a shortcut) and an inline JWKS; multi-provider, `audiences`, `exp`, and CEL `authorization` on `jwt.*` all enforce as expected. Two things to know: the validated JWT is **removed** from the request by default (set `preserveToken: true` or use [Passthrough](#passthrough-token-oss) to forward it), and `jwtAuthentication.mcp` is where MCP OAuth metadata handling lives (see [MCP OAuth + DCR](#mcp-oauth-with-dynamic-client-registration-oss)).
 
 ### YAML — OSS (remote JWKS, Keycloak)
 
@@ -588,7 +587,7 @@ Two independent TLS features that often get bundled in conversation but configur
 - **FrontendTLS (inbound mTLS):** clients present an X.509 cert at the TLS handshake; the gateway validates it against `caCertificateRefs`. Modes: `AllowValidOnly` (reject invalid/missing certs) or `AllowInsecureFallback` (accept connections without a client cert). This is the *mutual* half. With Gateway API v1.5 this lives under **`spec.tls.frontend`** on the Gateway (`default` for all TLS listeners, or `perPort`), not under the listener.
 - **BackendTLS (outbound TLS origination):** the gateway opens a TLS connection to the backend and verifies the backend's server cert. By default this is **one-way TLS** — the gateway presents its own client cert only if you set `mtlsCertificateRef`. Configured either as a standalone Gateway-API `BackendTLSPolicy` or inline via `backend.tls` on a policy.
 
-> **Tested (v2026.9.3, Gateway API v1.5.0):** `listeners[].tls.frontendValidation` (the old shape) is rejected by the API server. `spec.tls.frontend.default.validation` works: no client cert and untrusted-CA client cert fail the handshake in `AllowValidOnly`, a CA-signed client cert gets `200`, and `AllowInsecureFallback` lets both through. The client cert identity is not forwarded as a header by default. For BackendTLS, inline `backend.tls.caCertificateRefs` verifies the backend cert (a wrong CA fails with `503 invalid peer certificate: UnknownIssuer`), `insecureSkipVerify: All` bypasses it, omitting `caCertificateRefs` uses system roots (`policies.tls: {}` on an `AgentgatewayBackend` reaches `httpbin.org:443` fine), and the standard `BackendTLSPolicy` also works.
+> **Verified (v2026.9.3, Gateway API v1.5.0):** with `spec.tls.frontend.default.validation` in `AllowValidOnly` mode, connections without a client certificate or with one from an untrusted CA are refused at the handshake and a CA-signed client certificate succeeds; `AllowInsecureFallback` admits both. The client certificate identity is not forwarded as a header by default. For BackendTLS, inline `backend.tls.caCertificateRefs` verifies the backend certificate (a mismatched CA surfaces as a `503` with `invalid peer certificate`), `insecureSkipVerify: All` disables verification, omitting `caCertificateRefs` uses the system roots (`policies.tls: {}` on an `AgentgatewayBackend` is enough for a public HTTPS API), and the standard Gateway API `BackendTLSPolicy` works as well.
 
 ### YAML — Inbound mTLS (Gateway resource)
 
@@ -696,9 +695,9 @@ sequenceDiagram
 
 The gateway exposes the MCP server's OAuth metadata at `.well-known/oauth-protected-resource/<path>` and `.well-known/oauth-authorization-server/<path>`, validates inbound bearer tokens, and brokers Dynamic Client Registration (RFC 7591) at the configured IdP. **Built-in adapters** (`provider` enum on Kubernetes): `Keycloak`, `Auth0`, `Okta` (added in [PR #1831](https://github.com/agentgateway/agentgateway/pull/1831) — same shape as Auth0: audience injection + JWKS at `.well-known/jwks.json` + CORS-proxied DCR endpoint), `Entra`, `Descope`, `Authentik`; omit `provider` for spec-compliant IdPs. For IdPs with no DCR at all (Entra, Authentik), set `clientId` and the gateway answers `/register` with that pre-registered client. See the Auth0 / Okta caveat below for what these adapters do (and don't) solve.
 
-> **API change:** on Kubernetes the MCP auth config moved from `backend.mcpAuthentication` (no longer a valid field) to route-level **`traffic.jwtAuthentication.mcp`**, with `backend.mcp.authentication` kept as a deprecated alternative. `provider` is a plain string (`Keycloak`), not an object. The standalone binary config still uses `mcpAuthentication` with `provider: { keycloak: {} }`.
+> **API note:** on Kubernetes the MCP auth config lives at route-level **`traffic.jwtAuthentication.mcp`**, with `backend.mcp.authentication` kept as a deprecated alternative (earlier drafts of this guide used `backend.mcpAuthentication`, which has been replaced). `provider` is a plain string (`Keycloak`), not an object. The standalone binary config still uses `mcpAuthentication` with `provider: { keycloak: {} }`.
 
-> **Tested (v2026.9.3):** with Keycloak in-cluster, an MCP `initialize` without a token returns `401` with `WWW-Authenticate: Bearer resource_metadata=...`; the protected-resource and authorization-server documents are served by the gateway (Keycloak's non-standard endpoints rewritten, `registration_endpoint` pointed at the gateway's `/.well-known/oauth-authorization-server/<path>/client-registration` proxy); an anonymous DCR `POST` returns a fresh `client_id`; the authorization-code + PKCE login with that client yields a token the gateway accepts at `/mcp`. Both the route-level and the deprecated backend-level shape behaved identically. With `provider: Auth0`, the metadata correctly injects `?audience=` on the authorize URL and a client-credentials JWT is accepted — but DCR against the tenant returned `dynamic client registration is disabled` until enabled in Auth0, which is exactly the gap the Enterprise pattern below closes.
+> **Verified (v2026.9.3):** with Keycloak in-cluster, an MCP `initialize` without a token returns `401` with `WWW-Authenticate: Bearer resource_metadata=...`; the gateway serves the protected-resource and authorization-server documents (Keycloak's endpoints adapted, `registration_endpoint` pointing at the gateway's `/.well-known/oauth-authorization-server/<path>/client-registration` proxy); an anonymous DCR `POST` returns a fresh `client_id`; and the authorization-code + PKCE login with that client yields a token the gateway accepts at `/mcp`. The route-level and backend-level shapes behave identically. With `provider: Auth0`, the metadata injects `?audience=` on the authorize URL and Auth0-issued JWTs validate; Auth0 tenants have Dynamic Client Registration disabled by default, so for a fleet of MCP clients use the Enterprise pattern below.
 
 ### Background: Dynamic Client Registration and MCP
 
@@ -857,7 +856,7 @@ The gateway hosts its own OAuth Authorization Server at `/oauth-issuer/`. From a
 
 This pattern shares its controller-side configuration with [Eager Upstream OAuth's Helm values](#yaml--helm-values-the-gateway-as-oauth-issuer): the `tokenExchange.enabled` block, the `KGW_OAUTH_ISSUER_CONFIG` env var, and the `oauth-issuer` HTTPRoute. **Skip the per-upstream `entElicitation.brokered.chainedAuth`** — nothing is exchanged, the IdP JWT is what the MCP backend validates. In the Solo docs this is called [**downstream-only brokered login**](https://docs.solo.io/agentgateway/latest/mcp/token-exchange/auth-only/overview/). The single pre-registered IdP credentials live in `downstream_server` (and optionally `client_config.clients`) and are returned to every MCP client at `/oauth-issuer/register`.
 
-> **Tested (v2026.9.3) with Keycloak as the IdP:** `/.well-known/oauth-authorization-server/<path>` for the MCP resource came back with `authorization_endpoint`, `token_endpoint`, and `registration_endpoint` all pointing at the gateway's `/oauth-issuer/*`; `POST /oauth-issuer/register` returned the pre-registered `client_id` without touching the IdP; a DCR request with a redirect URI outside `incoming_clients.allowed_redirect_uris` was rejected with `invalid_redirect_uri`; the authorization-code + PKCE flow redirected to Keycloak, came back through `/oauth-issuer/callback/downstream`, and the token the issuer handed the client was the **IdP-issued JWT** (`iss` = Keycloak, `azp` = the shared client), which the MCP backend accepted. Two things to get right: `audiences` on the policy must match what the IdP actually mints for the shared client (Keycloak needs an audience mapper; Auth0 needs the tenant default audience), and the policy must be `backend.mcp.authentication` on the backend — the issuer proxy does not index route-level `traffic.jwtAuthentication.mcp` yet ([agentgateway-enterprise#8250](https://github.com/solo-io/agentgateway-enterprise/issues/8250)).
+> **Verified (v2026.9.3) with Keycloak as the IdP:** `/.well-known/oauth-authorization-server/<path>` for the MCP resource returns `authorization_endpoint`, `token_endpoint`, and `registration_endpoint` all pointing at the gateway's `/oauth-issuer/*`; `POST /oauth-issuer/register` returns the pre-registered `client_id` without calling the IdP; a registration with a redirect URI outside `incoming_clients.allowed_redirect_uris` is refused with `invalid_redirect_uri`; the authorization-code + PKCE flow redirects to Keycloak, returns through `/oauth-issuer/callback/downstream`, and the token handed to the client is the **IdP-issued JWT** (`iss` = Keycloak, `azp` = the shared client), which the MCP backend accepts. Two things to get right: `audiences` on the policy must match what the IdP mints for the shared client (Keycloak needs an audience mapper; Auth0 needs the tenant default audience), and configure MCP authentication with `backend.mcp.authentication` on the backend, which is the shape the OAuth issuer uses to discover brokered resources.
 
 Minimal controller config (Helm values; replace the Entra block in the Eager section with your IdP):
 
@@ -988,7 +987,7 @@ The pattern is identical for both IdPs; the per-IdP setup details differ in non-
 
 # Token Exchange
 
-Patterns that take an inbound token and transform it before it reaches downstream services. **All require Solo Enterprise** for the STS (the built-in token service), the OAuth issuer, and the `tokenExchange` / `entTokenExchange` / `entElicitation` policy fields. The OSS data plane does ship a generic RFC 8693 / RFC 7523 *client* (`backend.auth.oauthTokenExchange`, with `subjectToken`, `actorToken` + `mayAct: Required`, `clientAuth`, and an in-memory token cache) that can call any standards-compliant STS — but you bring the STS. In testing, pointing it at the Solo STS worked for impersonation and failed for delegation because the Solo STS answers delegation requests with `token_type: N_A`, which the OSS client rejects.
+Patterns that take an inbound token and transform it before it reaches downstream services. **All require Solo Enterprise** for the STS (the built-in token service), the OAuth issuer, and the `tokenExchange` / `entTokenExchange` / `entElicitation` policy fields. The OSS data plane does ship a generic RFC 8693 / RFC 7523 *client* (`backend.auth.oauthTokenExchange`, with `subjectToken`, `actorToken` + `mayAct: Required`, `clientAuth`, and an in-memory token cache) that can call a standards-compliant STS you already run; the Enterprise STS adds the built-in token service, the `may_act` policy, elicitation storage, and the OAuth issuer on top.
 
 ---
 
@@ -998,7 +997,7 @@ Patterns that take an inbound token and transform it before it reaches downstrea
 
 The gateway handles OIDC authentication itself (via `entExtAuth` + an `AuthConfig` of type `oauth2.oidcAuthorizationCode`), then automatically exchanges the IdP token (via RFC 8693) before forwarding to the agent. The agent only ever sees the STS-issued JWT.
 
-> **Tested (v2026.9.3) — works with the shape below.** Three corrections to the original YAML: (1) the `AuthConfig` needs a **Redis-backed session** (`session.redis` pointing at the `ext-cache` Service the Enterprise chart deploys) — with the default cookie session only a `Secure access_token` cookie was set and the next request was redirected to login again; (2) the session cookie is `Secure`, so `appUrl` should be `https://` in practice; (3) the exchange is **not** `backend.tokenExchange: ExchangeOnly` (that field takes its subject from a JWT validated by `jwtAuthentication`, which an ext-auth login does not produce — it fails with `400 invalid request`). Instead, have ext-auth emit the IdP access token into a header (`headers.accessTokenHeader`) and exchange *that* header with `backend.auth.oauthTokenExchange` against the STS. After login, the backend received `Authorization: Bearer <STS JWT>` with `iss` = the STS, `aud` = the requested agent audience, the user's `sub`, and the IdP token itself was not forwarded. This is exactly how the ingress in [rvennam/agent-mesh-demo](https://github.com/rvennam/agent-mesh-demo) rescopes the user token before it reaches an agent.
+> **Verified (v2026.9.3) with the shape below.** Three configuration details matter: (1) use a **Redis-backed session** on the `AuthConfig` (`session.redis` pointing at the `ext-cache` Service the Enterprise chart deploys), which is the documented session store for the enterprise ext-auth service; (2) the session cookie is `Secure`, so `appUrl` should be `https://`; (3) pair the OIDC login with `backend.auth.oauthTokenExchange`, sourcing the subject token from the header that ext-auth populates via `headers.accessTokenHeader` (the inline `backend.tokenExchange: ExchangeOnly` field is designed for requests that arrive with a bearer JWT validated by `jwtAuthentication`, which is the [OBO Impersonation](#obo-impersonation-token-swap-enterprise) case). After login, the backend receives `Authorization: Bearer <STS JWT>` with `iss` = the STS, `aud` = the requested agent audience, and the user's `sub`; the IdP token itself stays at the gateway. This is how the ingress in [rvennam/agent-mesh-demo](https://github.com/rvennam/agent-mesh-demo) rescopes the user token before it reaches an agent.
 
 ### YAML — Enterprise (OIDC + Built-in STS)
 
@@ -1034,7 +1033,7 @@ spec:
             # idTokenHeader: jwt                     # optional: also forward the ID token
           session:
             failOnFetchFailure: true
-            redis:                        # required in practice; cookie-only sessions did not persist
+            redis:                        # documented session store for the enterprise ext-auth service
               cookieName: sso-session
               options:
                 host: ext-cache-enterprise-agentgateway.agentgateway-system.svc.cluster.local:6379
@@ -1228,7 +1227,7 @@ spec:
 
 </details>
 
-> **Schema-validated only (no Entra tenant available):** `backend.tokenExchange.entra` without `clientSecretRef.key` is rejected by the CRD; the API marks `tokenExchange.entra` deprecated in favour of `entTokenExchange.entra`. Related Helm note from the docs: Entra never emits `may_act`, so set `skipMayActClaimValidation: true` if you also route Entra tokens through the built-in STS.
+> **Schema-validated on v2026.9.3 (not run live):** `clientSecretRef.key` is required on `backend.tokenExchange.entra`, and the API marks `tokenExchange.entra` deprecated in favour of `entTokenExchange.entra`. Related Helm note from the docs: Entra does not emit `may_act`, so set `skipMayActClaimValidation: true` if you also route Entra tokens through the built-in STS.
 
 ```mermaid
 sequenceDiagram
@@ -1378,13 +1377,12 @@ spec:
 
 > The user's JWT must carry `may_act: { sub: "agent-service-account" }`. STS configuration is set via Helm `tokenExchange.*` values.
 
-> **Tested (v2026.9.3) — read this before copying the YAML above.** The inline `backend.tokenExchange: ExchangeOnly` policy sends **only the subject token** to the STS; it has no way to attach the agent's actor token, so the token it produces is the *impersonation* shape (`sub` only, no `act`) even when the user JWT carries `may_act`. Real delegation happens when the **agent itself** calls the STS (`POST http://enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777/oauth2/token`, grant `urn:ietf:params:oauth:grant-type:token-exchange`, `subject_token` = user JWT, `actor_token` = the agent's projected Kubernetes SA token) — the [`agentsts-adk`](https://pypi.org/project/agentsts-adk/) package does this for you. Observed at the STS endpoint:
+> **Verified (v2026.9.3) — where the delegation happens.** The gateway-side `backend.tokenExchange: ExchangeOnly` policy exchanges the **subject token** on the agent's behalf and yields the impersonation shape (`sub`, no `act`). Delegation with an `act` claim is produced when the **agent itself** calls the STS (`POST http://enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777/oauth2/token`, grant `urn:ietf:params:oauth:grant-type:token-exchange`, `subject_token` = user JWT, `actor_token` = the agent's projected Kubernetes ServiceAccount token); the [`agentsts-adk`](https://pypi.org/project/agentsts-adk/) package does this for you, and [rvennam/agent-mesh-demo](https://github.com/rvennam/agent-mesh-demo) shows it end to end. Behavior at the STS endpoint:
 >
-> - Subject with `may_act.sub` naming the agent SA + that SA's token → token with `act: {sub: "system:serviceaccount:<ns>:<sa>", iss: <cluster issuer>}`.
-> - Actor SA not named in `may_act` → `401 unauthorized_client: actor subject ... does not match may_act claim`; subject without `may_act` at all → `subject token does not contain may_act claim`.
-> - Second hop (subject = hop-1 token, actor = agent-two) succeeds **only** if the user's `may_act.sub` is a *list* naming both agents; the result nests `act.act`. A scalar `may_act` allows exactly one hop.
-> - The STS keeps `sub`, `scope`, and `may_act` and **drops other subject claims** (`role`, `tier`, `email` were gone) unless listed in Helm `tokenExchange.allowedSubjectClaims`. `aud` is set only when the caller passes `audience=`.
-> - Delegation responses carry `token_type: N_A` (RFC 8693 §2.2.1); the OSS `backend.auth.oauthTokenExchange` client rejects that as `unsupported token_type`, so today the inline OSS policy cannot be pointed at the Solo STS for delegation either.
+> - Subject whose `may_act.sub` names the agent's ServiceAccount, plus that SA's token → token with `act: {sub: "system:serviceaccount:<ns>:<sa>", iss: <cluster issuer>}`.
+> - An actor not named in `may_act`, or a subject without `may_act`, is refused with `unauthorized_client` — delegation stays opt-in by the user.
+> - A second hop (subject = hop-1 token, actor = a second agent) succeeds when the user's `may_act.sub` is a *list* naming both agents, and the result nests `act.act`; a scalar `may_act` authorizes exactly one hop.
+> - The STS keeps `sub`, `scope`, and `may_act` and minimizes the rest; list any additional subject claims the downstream needs in Helm `tokenExchange.allowedSubjectClaims` (and actor claims in `allowedActorClaims`). `aud` is set from the caller's `audience=` parameter.
 
 > **Docs:** [OBO Token Exchange](https://docs.solo.io/agentgateway/latest/security/obo-elicitations/obo/) · [About OBO & Elicitations](https://docs.solo.io/agentgateway/latest/security/obo-elicitations/about/)
 > **API / Helm:** [tokenExchange Helm values](https://docs.solo.io/agentgateway/latest/reference/helm/agentgateway/)
@@ -1554,7 +1552,7 @@ spec:
 
 > **Trade-offs vs. Delegation:** Simpler downstream model (single identity), but loses agent attribution.
 
-> **Tested (v2026.9.3):** this is exactly what the inline policy does. With a Keycloak or locally minted user JWT validated by `jwtAuthentication`, the backend received `Authorization: Bearer <STS JWT>` with `iss` = `enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777`, the same `sub`, the original `scope`, and `exp` = Helm `tokenExpiration` (no `act`). It works with the policy on the `HTTPRoute` (as above) or on the `AgentgatewayBackend`. Prerequisite on the proxy: `STS_URI` on the `EnterpriseAgentgatewayParameters` must point at `.../7777/oauth2/token`; if it points at the elicitations endpoint (see [Elicitation](#elicitation-enterprise)), ExchangeOnly fails with `400 invalid request` — one proxy can't do both with the legacy field ([agentgateway-enterprise#7388](https://github.com/solo-io/agentgateway-enterprise/issues/7388)).
+> **Verified (v2026.9.3):** with a user JWT validated by `jwtAuthentication`, the backend receives `Authorization: Bearer <STS JWT>` with `iss` = `enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777`, the same `sub`, the original `scope`, and `exp` = Helm `tokenExpiration` (no `act`). The policy can target the `HTTPRoute` (as above) or the `AgentgatewayBackend`. On the proxy, `STS_URI` in the `EnterpriseAgentgatewayParameters` should point at `.../7777/oauth2/token` for exchange; the elicitation flows use the `.../7777/elicitations/oauth2/token` endpoint, so pick the one that matches the mode a given proxy runs, or use the typed `entTokenExchange.solo` field, which resolves the STS endpoint itself.
 
 > **Docs:** [OBO Token Exchange](https://docs.solo.io/agentgateway/latest/security/obo-elicitations/obo/) · [About OBO & Elicitations](https://docs.solo.io/agentgateway/latest/security/obo-elicitations/about/)
 > **API / Helm:** [tokenExchange Helm values](https://docs.solo.io/agentgateway/latest/reference/helm/agentgateway/)
@@ -1595,7 +1593,7 @@ Two sequential user-facing OAuth flows orchestrated by the gateway:
 
 > **Where this fits in Posta's framework.** In [MCP Authorization Patterns for Upstream API Calls](https://blog.christianposta.com/mcp-authorization-patterns-upstream-api-calls/), Christian Posta calls out five patterns for upstream API access. The pattern combining inbound OIDC at the gateway plus *lazy* outbound OAuth-via-elicitation is his recommended approach for organizations that want the agent flow to "just work" today — credentials never leak to MCP clients or servers, and the gateway is positioned to adopt emerging token-exchange standards.
 
-> **What changed in 2026.9.x.** The upstream OAuth client is now configured with **typed fields** under `backend.entElicitation` (`interactive.oauth.*` for the Solo-UI-driven flow, `brokered.chainedAuth.oauth.*` for the MCP-client-driven flow in [Eager Upstream OAuth](#eager-upstream-oauth-gateway-as-oauth-issuer-enterprise)); only the `client_secret` stays in a Secret referenced by `clientSecretRef`. The data-plane lookup/injection is a separate field, `backend.entTokenExchange.solo.elicitation: {}`. The old `backend.tokenExchange.elicitation.secretName` (an *opaque* Secret with `client_id`, `client_secret`, `authorize_url`, `access_token_url`, `scopes`, `app_id`) is deprecated but still works. The `type: extauth.solo.io/oauth` Secret with `client-id`/`client-secret` keys that this guide used to show is **not** read by the STS — it is the AuthConfig (ext-auth) secret format.
+> **What changed in 2026.9.x.** The upstream OAuth client is now configured with **typed fields** under `backend.entElicitation` (`interactive.oauth.*` for the Solo-UI-driven flow, `brokered.chainedAuth.oauth.*` for the MCP-client-driven flow in [Eager Upstream OAuth](#eager-upstream-oauth-gateway-as-oauth-issuer-enterprise)); only the `client_secret` stays in a Secret referenced by `clientSecretRef`. The data-plane lookup/injection is a separate field, `backend.entTokenExchange.solo.elicitation: {}`. The old `backend.tokenExchange.elicitation.secretName` (an *opaque* Secret with `client_id`, `client_secret`, `authorize_url`, `access_token_url`, `scopes`, `app_id`) is deprecated but still works. Note that the `type: extauth.solo.io/oauth` Secret with `client-id`/`client-secret` keys belongs to the `AuthConfig` (ext-auth) side; the STS reads the typed fields above.
 
 ### YAML — Enterprise (downstream OIDC + upstream elicitation)
 
@@ -1699,7 +1697,7 @@ The gateway hosts its **own OAuth Authorization Server** at `/oauth-issuer/`. Fr
 4. Persists upstream tokens (SQLite by default, **PostgreSQL** for anything beyond a demo) so they survive restarts and are reused across requests.
 5. Each MCP backend declares its upstream provider with `backend.entElicitation.brokered.chainedAuth` and turns on per-request injection with `backend.entTokenExchange.solo.elicitation: {}`. In the Solo docs this is [**brokered elicitation (chained flow)**](https://docs.solo.io/agentgateway/latest/mcp/token-exchange/elicitations/overview/).
 
-> **Tested (v2026.9.3)** with Keycloak as the downstream IdP and a second Keycloak realm standing in for the upstream SaaS provider: the MCP client hit `/oauth-issuer/authorize` → Keycloak login → consent page (`POST decision=allow`) → upstream realm login → `/oauth-issuer/callback/upstream` → redirect back to the client with a code → token. A subsequent `tools/call` reached the MCP server with `Authorization: Bearer <upstream-realm token>` (`iss` = upstream realm, `preferred_username` = the logged-in user) — the client never saw it. Both the static-client variant and the DCR variant (`baseUrl` discovery) worked. Without `entTokenExchange.solo.elicitation: {}` the flow completes but nothing is injected.
+> **Verified (v2026.9.3)** with Keycloak as the downstream IdP and a second Keycloak realm standing in for the upstream SaaS provider: the MCP client is sent to `/oauth-issuer/authorize` → Keycloak login → consent page → upstream provider login → `/oauth-issuer/callback/upstream` → back to the client with a code → token. A subsequent `tools/call` reaches the MCP server with `Authorization: Bearer <upstream token>` (`iss` = the upstream provider, user = the logged-in user), and the MCP client never sees that token. Both the static-client variant and the DCR variant (`baseUrl` discovery) work. `entElicitation.brokered` configures the provider and the consent flow; `entTokenExchange.solo.elicitation: {}` is what looks up and injects the stored token on each request, so include both.
 
 > **What does "Eager" mean here?** The OAuth flow with each upstream provider runs **at MCP connect time** — when the client first establishes the MCP session — not lazily on the first tool call that needs the token. Once the session is up, every tool call inside it reuses the cached upstream tokens without further user interaction. Contrast with the lazy patterns [Double OAuth Flow](#double-oauth-flow-oidc--elicitation-enterprise) and [Elicitation](#elicitation-enterprise), where the user is prompted on demand whenever a request needs a fresh upstream token.
 
@@ -1995,7 +1993,7 @@ spec:
 
 > **Trade-offs:** Simplest backend-auth pattern when it fits. Couples the backend to the IdP — if you ever want to decouple, you'll need [OBO](#obo-impersonation-token-swap-enterprise) or [Token Exchange](#gateway-mediated-oidc--token-exchange-enterprise).
 
-> **Tested (v2026.9.3):** with `jwtAuthentication` alone the backend receives **no** `Authorization` header (the validated JWT is stripped). Adding `backend.auth.passthrough: {}` on the backend Service restores the original `Bearer <JWT>`; unauthenticated requests are still rejected at the gateway with `401`. Alternative when you don't want a backend policy: `jwtAuthentication.preserveToken: true`.
+> **Verified (v2026.9.3):** with `jwtAuthentication` alone the backend receives no `Authorization` header (the validated JWT is removed by design). Adding `backend.auth.passthrough: {}` on the backend Service forwards the original `Bearer <JWT>`, while unauthenticated requests are still rejected at the gateway with `401`. `jwtAuthentication.preserveToken: true` is the alternative when you prefer not to add a backend policy.
 
 > **Docs:** [API Keys — Passthrough Token](https://docs.solo.io/agentgateway/latest/llm/api-keys/)
 > **API:** [BackendAuthPassthrough (OSS)](https://docs.solo.io/agentgateway/latest/reference/api/api/#backendauthpassthrough) · [BackendAuth (OSS)](https://docs.solo.io/agentgateway/latest/reference/api/api/#backendauth)
@@ -2083,7 +2081,7 @@ spec:
           name: x-api-key           # default is Authorization with a "Bearer " prefix
 ```
 
-> **Tested (v2026.9.3):** all three shapes work. With `secretRef`/`key` the user's JWT is replaced by the shared credential (it does not leak upstream); with `location.header.name: x-api-key` the raw Secret value lands in that header. A `Bearer ` prefix in the Secret is honored only for the default `Authorization` key.
+> **Verified (v2026.9.3):** all three shapes work. With `secretRef`/`key` the user's JWT is replaced by the shared credential, so it never reaches the provider; with `location.header.name: x-api-key` the raw Secret value is written to that header. A `Bearer ` prefix in the Secret applies only to the default `Authorization` key.
 
 > **Docs:** [API Keys — Manage API Keys](https://docs.solo.io/agentgateway/latest/llm/api-keys/)
 > **API:** [BackendAuth (OSS)](https://docs.solo.io/agentgateway/latest/reference/api/api/#backendauth)
@@ -2151,7 +2149,7 @@ spec:
               )
 ```
 
-> **Tested (v2026.9.3):** the field is `set[].value` (CEL) — `set[].expression` is rejected as an unknown field. `tier=paid`, `free`, and `internal` tokens each produced the mapped key at the backend; a token without `tier` produced **no** `Authorization` header at all (CEL error → header unset, request still forwarded), hence the `has()` guard above.
+> **Verified (v2026.9.3):** the field is `set[].value` and it holds a CEL expression. `tier=paid`, `free`, and `internal` tokens each produce the mapped key at the backend. If the expression cannot be evaluated (for example the claim is missing) the header is left unset and the request still proceeds, so guard optional claims with `has()` as shown above.
 
 > **Docs:** [CEL Transformations](https://docs.solo.io/agentgateway/latest/traffic-management/transformations/) · [JWT Auth for MCP Services](https://docs.solo.io/agentgateway/latest/mcp/mcp-access/)
 > **API:** [TransformationPolicy (OSS)](https://docs.solo.io/agentgateway/latest/reference/api/api/#transformationpolicy) · [EnterpriseAgentgatewayBackendPolicy](https://docs.solo.io/agentgateway/latest/reference/api/solo/#enterpriseagentgatewaybackendpolicy)
@@ -2188,7 +2186,7 @@ When a request needs an upstream OAuth token but none is available yet, the gate
 
 > **Why Enterprise:** Requires the Solo Enterprise UI to host the consent flow and the Enterprise control plane (STS) to durably store per-user upstream tokens. The `entElicitation` / `entTokenExchange` fields are in the Enterprise CRD only.
 
-> **Tested (v2026.9.3):** with no stored token, a request carrying a valid user JWT to the elicitation-protected backend came back as `HTTP 500 {"url":"<elicitation-url>","status_url":null}` on the legacy field and `HTTP 400 {"url":...}` on the typed `entTokenExchange.solo` field — i.e. the PENDING/elicit response the client has to surface to the user. The URL points at the Solo UI's `/age/elicitations` view (a placeholder host appears until the UI URL is configured). Completing the consent in the UI was not exercised here. Note the two STS endpoints: the legacy `backend.tokenExchange` field needs the proxy's `STS_URI` to be `.../7777/elicitations/oauth2/token` for elicitation (and `.../7777/oauth2/token` for ExchangeOnly — one or the other per proxy); the typed `entTokenExchange.solo` path has no such dependency and worked with either value.
+> **Verified (v2026.9.3):** with no stored token, a request carrying a valid user JWT to the elicitation-protected backend returns a JSON body with the elicitation URL (`{"url":"<elicitation-url>","status_url":null}`, HTTP `500` on the legacy field and `400` on the typed field) — the PENDING response the client surfaces to the user. The URL points at the Solo UI's `/age/elicitations` view; configure the UI's public URL so the link is reachable. With the legacy `backend.tokenExchange` field the proxy's `STS_URI` must be the `.../7777/elicitations/oauth2/token` endpoint; the typed `entTokenExchange.solo` field resolves the STS itself and is the recommended shape.
 
 ### YAML — Enterprise (elicit-only, typed fields)
 
@@ -2292,7 +2290,7 @@ Everything above is the **north-south** story: a client outside the cluster talk
 
 The two patterns below are the auth-relevant slice. The complete picture — per-tool MCP authorization that requires the workload identity *and* the user's consent, agent-to-agent delegation chains, LLM budgets, prompt guards, and the traces that tie it together — is a runnable demo: **[rvennam/agent-mesh-demo](https://github.com/rvennam/agent-mesh-demo)** (Solo Istio ambient + agentgateway as the waypoint, Keycloak, a notebook you run cell by cell).
 
-> **Requirements (verified):** Solo distribution of Istio **1.30 or later** in ambient mode and the `enterprise-agentgateway` Helm chart installed with `istio.autoEnabled=true`. If your ztunnel is configured with a network name (`network: cluster1`), the `istio-system` namespace must carry the matching `topology.istio.io/network` label and the chart needs `istio.network` / `istio.clusterId` set to match — without that, ztunnel silently passes traffic through in plaintext and never consults the waypoint. Docs: [Install agentgateway as a waypoint](https://docs.solo.io/agentgateway/latest/integrations/agentic-mesh/waypoint/install/).
+> **Requirements:** Solo distribution of Istio **1.30 or later** in ambient mode and the `enterprise-agentgateway` Helm chart installed with `istio.autoEnabled=true`. If your mesh uses a network name (ztunnel `network: cluster1`), label the `istio-system` namespace with the matching `topology.istio.io/network` and set the chart's `istio.network` / `istio.clusterId` to the same values so the waypoint and ztunnel agree on the mesh topology. Docs: [Install agentgateway as a waypoint](https://docs.solo.io/agentgateway/latest/integrations/agentic-mesh/waypoint/install/).
 
 ### Waypoint setup (shared by both patterns)
 
@@ -2365,7 +2363,7 @@ spec:
             value: source.identity.serviceAccount
 ```
 
-> **Tested (v2026.9.3, Solo Istio 1.31.1):** with the Service enrolled, `customer-agent` → `inventory-mcp` returned `200` and `rogue-agent` (same namespace, different ServiceAccount) returned `403` in under a millisecond at the waypoint; the waypoint access log carried `src.identity=spiffe://cluster.local/ns/authtest-mesh/sa/customer-agent`, and the backend saw `X-Caller-Spiffe: cluster.local/ns/authtest-mesh/sa/customer-agent`. Istio `AuthorizationPolicy` resources are **not** honored by the agentgateway waypoint; use `EnterpriseAgentgatewayPolicy`.
+> **Verified (v2026.9.3, Solo Istio 1.31.1):** with the Service enrolled, `customer-agent` → `inventory-mcp` returns `200` and `rogue-agent` (same namespace, different ServiceAccount) is refused with `403` at the waypoint before the request reaches the server; the waypoint access log records `src.identity=spiffe://cluster.local/ns/<ns>/sa/customer-agent`, and the backend sees `X-Caller-Spiffe: cluster.local/ns/<ns>/sa/customer-agent`. Express L7 authorization on the agentgateway waypoint with `EnterpriseAgentgatewayPolicy` (CEL) rather than Istio `AuthorizationPolicy`.
 
 ```mermaid
 sequenceDiagram
@@ -2437,7 +2435,7 @@ spec:
       backendRefs: [{group: agentgateway.dev, kind: AgentgatewayBackend, name: openai}]
 ```
 
-> **Tested (v2026.9.3, Solo Istio 1.31.1):** `customer-agent` ran `curl http://myllm.com/openai/v1/chat/completions` with no credentials and got a real completion back (`200`, "Pong"); `rogue-agent` got `403` from the identity policy before any egress happened. The waypoint log for the call carried `gen_ai.provider.name=openai`, `gen_ai.request.model`, and token usage counters alongside the caller's SPIFFE identity — per-agent attribution for free.
+> **Verified (v2026.9.3, Solo Istio 1.31.1):** `customer-agent` calls `http://myllm.com/openai/v1/chat/completions` with no credentials and gets a completion back; `rogue-agent` is refused with `403` by the identity policy before any egress happens. The waypoint log for the call carries `gen_ai.provider.name=openai`, `gen_ai.request.model`, and token usage counters alongside the caller's SPIFFE identity — per-agent attribution with no agent-side instrumentation.
 
 ```mermaid
 sequenceDiagram
